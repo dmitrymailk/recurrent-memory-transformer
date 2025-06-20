@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=0,1,2,3 NP=4 ./finetune_babilong_qa1_rmt_vary_n_seg.sh
