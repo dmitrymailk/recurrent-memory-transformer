@@ -139,3 +139,4 @@ dmypy.json
 .vscode/
 runs/
 data/*.tsv
+rmt_workdir

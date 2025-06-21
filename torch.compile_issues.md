@@ -1,0 +1,2 @@
+- [deepspeed Support torch.compile](https://github.com/deepspeedai/DeepSpeed/issues/5009) - tl;dr вероятно поддерживает
+- [Zero3 for torch.compile with compiled_autograd when running LayerNorm](https://github.com/deepspeedai/DeepSpeed/issues/6719)
