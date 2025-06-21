@@ -1,0 +1,1 @@
+bash 2seg_train.sh > 2seg_train.log 2>&1 &

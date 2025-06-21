@@ -210,7 +210,7 @@ class Trainer:
     def __init__(
         self,
         args,
-        accelerator,
+        accelerator: accelerate.Accelerator,
         model,
         optimizer,
         train_dataloader,
@@ -724,6 +724,12 @@ class Trainer:
                 # batch-lvl averaged metrics:
                 train_metrics = self.collect_metrics(split="train")
                 train_loss = train_metrics["loss"]
+                self.accelerator.log(
+                    {
+                        "train_loss": train_loss,
+                    },
+                    step=self.n_iter * self.global_batch_size,
+                )
                 global_grad_norms = accelerate.utils.gather_object(
                     self.global_grad_norms
                 )
@@ -795,6 +801,12 @@ class Trainer:
                 # todo: we can use other metrics than loss here
                 valid_metrics = self.validate(self.valid_dataloader)
                 valid_loss = valid_metrics["loss"]
+                self.accelerator.log(
+                    {
+                        "valid_loss": valid_loss,
+                    },
+                    step=self.n_iter * self.global_batch_size,
+                )
                 valid_metric = valid_metrics[self.args.optimize_metric]
                 if self.metric_improved_fn(best_valid_metric, valid_metric):
                     best_valid_metric = valid_metric

@@ -302,8 +302,10 @@ if __name__ == "__main__":
     os.chdir(args.working_dir)
 
     accelerator = accelerate.Accelerator(
-        gradient_accumulation_steps=args.gradient_accumulation_steps
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        log_with="wandb",
     )
+
     from accelerate.logging import get_logger
 
     logger = get_logger("")
@@ -709,6 +711,12 @@ if __name__ == "__main__":
     batch_metrics_fn = lambda _, y: {
         key: y[key] for key in y.keys() if (("loss" in key) or ("!log" in key))
     }
+
+    if accelerator.is_main_process:
+        accelerator.init_trackers(
+            "finetune_babilong_qa1_rmt_vary_n_seg_iter_tasks_curriculum"
+        )
+
     trainer = Trainer(
         args,
         accelerator,
