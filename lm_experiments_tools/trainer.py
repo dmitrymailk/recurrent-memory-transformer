@@ -931,7 +931,11 @@ class Trainer:
         elif load_path.is_file() and (load_path.parent / "trainer.pckl").exists():
             trainer_state_path = load_path.parent / "trainer.pckl"
         if trainer_state_path:
-            trainer_state = torch.load(trainer_state_path, map_location="cpu")
+            trainer_state = torch.load(
+                trainer_state_path,
+                map_location="cpu",
+                weights_only=False,
+            )
         if not reset_iteration:
             self.n_iter = (
                 trainer_state.get("iteration", 0) + 1
@@ -953,7 +957,11 @@ class Trainer:
                 )
         else:
             logger.info(f"Loading model from {load_path}")
-            checkpoint = torch.load(load_path, map_location="cpu")
+            checkpoint = torch.load(
+                load_path,
+                map_location="cpu",
+                weights_only=False,
+            )
             missing_k, unexpected_k = self.accelerator.unwrap_model(
                 self.model
             ).load_state_dict(checkpoint, strict=False)
