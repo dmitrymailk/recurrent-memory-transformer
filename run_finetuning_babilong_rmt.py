@@ -714,7 +714,10 @@ if __name__ == "__main__":
 
     if accelerator.is_main_process:
         accelerator.init_trackers(
-            "finetune_babilong_qa1_rmt_vary_n_seg_iter_tasks_curriculum"
+            "finetune_babilong_qa1_rmt_vary_n_seg_iter_tasks_curriculum",
+            init_kwargs={
+                "wandb": {"name": os.environ['WANDB_RUN_NAME']},
+            },
         )
 
     trainer = Trainer(

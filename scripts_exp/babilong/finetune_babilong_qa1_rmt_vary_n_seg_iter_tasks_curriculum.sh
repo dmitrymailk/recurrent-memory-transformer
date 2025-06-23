@@ -35,7 +35,8 @@ for TASK_DATASET in qa1_single-supporting-fact; do
 
       # MAX_N_SEGMENTSS=(0 1 2 4 6 8 16 32)
       MAX_N_SEGMENTSS=(0 1 2 4)
-      BSS=(32 32 16 16 8 8 4 2)
+      # BSS=(32 32 16 16 8 8 4 2)
+      BSS=(4 4 4 4 4 4 4 2)
 
       for ((j = 2; j < ${#MAX_N_SEGMENTSS[@]}; j++)); do
         MAX_N_SEGMENTS=${MAX_N_SEGMENTSS[j]}
@@ -67,8 +68,8 @@ for TASK_DATASET in qa1_single-supporting-fact; do
               --bf16 \
               --train_batch_size $TBS --train_micro_batch_size_per_gpu $BS --gradient_accumulation_steps $GRAD_ACC_STEPS --np $NP --gradient_clipping 1.0
             cd ..
-
-            echo RUNNING: TASK_DATASET $TASK_DATASET MEMORY_SIZE $MEMORY_SIZE SEGMENT_SIZE $SEGMENT_SIZE MAX_N_SEGMENTS $MAX_N_SEGMENTS
+            export WANDB_RUN_NAME="$TASK_DATASET MEMORY_SIZE $MEMORY_SIZE SEGMENT_SIZE $SEGMENT_SIZE MAX_N_SEGMENTS $MAX_N_SEGMENTS"
+            echo RUNNING: TASK_DATASET $WANDB_RUN_NAME
             echo SAMPLE_SIZE $SAMPLE_SIZE MODEL_NAME $MODEL_NAME LR $LR N $N
             echo gradient accumulation steps $GRAD_ACC_STEPS
 
@@ -104,7 +105,7 @@ for TASK_DATASET in qa1_single-supporting-fact; do
             #         --seed $(($N+42)) \
             #         --clip_grad_norm 1.0
 
-        #       --model_cpt $model_base_folder/${TASK_DATASET}/$MODEL_NAME/${SCHEDULER}_adamw_wd1e-03_${SRC_N_SEGMENTS}x${SEGMENT_SIZE}_mem${MEMORY_SIZE}_bs${TBS}_bptt-${K2}_from_cpt_${SRC_SRC_N_SEGMENTS}-${SRC_N_SEGMENTS}/run_$N/model_best \
+            #       --model_cpt $model_base_folder/${TASK_DATASET}/$MODEL_NAME/${SCHEDULER}_adamw_wd1e-03_${SRC_N_SEGMENTS}x${SEGMENT_SIZE}_mem${MEMORY_SIZE}_bs${TBS}_bptt-${K2}_from_cpt_${SRC_SRC_N_SEGMENTS}-${SRC_N_SEGMENTS}/run_$N/model_best \
             accelerate launch --config_file $ACCEL_CONFIG --main_process_port 29007 run_finetuning_babilong_rmt.py \
               --task_dataset $TASK_DATASET \
               --noise_dataset $NOISE_DATASET \

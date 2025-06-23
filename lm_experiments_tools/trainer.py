@@ -749,6 +749,12 @@ class Trainer:
                                 train_metrics[k],
                                 self.n_iter * self.global_batch_size,
                             )
+                        self.accelerator.log(
+                            {
+                                f"{k}_samples_train": train_metrics[k],
+                            },
+                            step=self.n_iter * self.global_batch_size,
+                        )
                     # log iteration time
                     if self.tb:
                         self.tb.add_scalar(
@@ -898,6 +904,12 @@ class Trainer:
                         metrics[k],
                         self.n_iter * self.global_batch_size,
                     )
+                self.accelerator.log(
+                    {
+                        f"{k}_samples_{split}": metrics[k],
+                    },
+                    step=self.n_iter * self.global_batch_size,
+                )
             if self.tb and write_tb:
                 self.tb.flush()
 
