@@ -1,0 +1,60 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "env": {
+        "WANDB_RUN_NAME": "WANDB_RMT_DEBUG",
+      },
+      "name": "Accelerate: Finetune Babilong (Debug Values)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "accelerate.commands.launch",
+      "cwd": "/code/",
+      "justMyCode": false,
+      "args": [
+        // --- Accelerate arguments ---
+        "--config_file=/code/accel_configs/accelerate/deepspeed_bf16_tbs2bs1g2c1.0np1.yaml",
+        "--main_process_port=29007",
+        // --- Main script ---
+        "run_finetuning_babilong_rmt.py",
+        // --- Script arguments from your debug output ---
+        "--task_dataset=qa1_single-supporting-fact",
+        "--noise_dataset=pg19",
+        "--babi_path=/code/rmt_workdir/babilong/data/tasks_1-20_v1-2/en-10k",
+        "--model_path=./debug_save_path", // Left empty as per your debug output
+        // "--from_pretrained=unsloth/Llama-3.2-1B",
+        "--from_pretrained=gpt2",
+        "--model_type=decoder",
+        "--memory_cell_cls=modeling_rmt.language_modeling:MemoryCell",
+        "--recurrent_wrapper_cls=modeling_rmt.language_modeling:RecurrentWrapper",
+        "--model_cls=transformers:AutoModelForCausalLM",
+        "--segment_size=512",
+        "--sample_size=1024",
+        "--num_mem_tokens=16",
+        "--max_n_segments=2",
+        "--vary_n_segments",
+        "--batch_size=1",
+        "--gradient_accumulation_steps=2", // Calculated: TBS / (BS * NP) = 2 / (1 * 1)
+        "--num_training_steps=10000", // Calculated: ITERS * 2 = 5000 * 2
+        "--iters=5000",
+        "--save_best",
+        "--k2=-1",
+        "--optimizer=AdamW",
+        "--weight_decay=0.01",
+        "--lr=1e-05",
+        "--lr_scheduler=linear",
+        "--num_warmup_steps=500", // Calculated: ITERS / 10 = 5000 / 10
+        "--data_n_workers=0",
+        "--log_interval=50", // Calculated: ITERS / 100 = 5000 / 100
+        "--valid_interval=250", // Calculated: ITERS / 20 = 5000 / 20
+        "--optimize_metric=exact_match",
+        "--optimize_mode=max",
+        "--show_valid_examples=5",
+        "--early_stopping_patience=15",
+        "--seed=48", // Calculated: N + 42 = 6 + 42
+        "--clip_grad_norm=1.0"
+        
+      ]
+    }
+  ]
+}
