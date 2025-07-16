@@ -140,3 +140,5 @@ runs/
 data/*.tsv
 rmt_workdir
 wandb
+debug_save_path
+git.diff

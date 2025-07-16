@@ -536,7 +536,11 @@ if __name__ == "__main__":
         else:
             logger.info(f"Loading pretrained model: {args.from_pretrained}")
             model = model_cls.from_pretrained(
-                args.from_pretrained, use_safetensors=False
+                # args.from_pretrained, use_safetensors=False
+                args.from_pretrained,
+                torch_dtype=torch.bfloat16,
+                attn_implementation='flash_attention_2'
+                
             )
 
     if args.use_lora:
@@ -607,6 +611,38 @@ if __name__ == "__main__":
     #         for param in module.parameters():
     #             param.set_(param.contiguous())
     # make_contiguous(model)
+    def filter_linear_layers(module, fqn, first_layer_name=None, last_layer_name=None):
+        if isinstance(module, torch.nn.Linear):
+            if module.in_features % 16 != 0 or module.out_features % 16 != 0:
+                return False
+        # For stability reasons, we skip the first and last linear layers
+        # Otherwise can lead to the model not training or converging properly
+        if fqn in (first_layer_name, last_layer_name):
+            return False
+        return True
+
+    # from torchao.float8 import convert_to_float8_training, Float8LinearConfig
+    # from functools import partial
+
+    # first_linear = None
+    # last_linear = None
+    # for name, module in model.named_modules():
+    #     if isinstance(module, torch.nn.Linear):
+    #         if first_linear is None:
+    #             first_linear = name
+    #         last_linear = name
+
+    # func = partial(
+    #     filter_linear_layers,
+    #     first_layer_name=first_linear,
+    #     last_layer_name=last_linear,
+    # )
+    # config = Float8LinearConfig.from_recipe_name("tensorwise")
+    # convert_to_float8_training(
+    #     model,
+    #     config=config,
+    #     module_filter_fn=func,
+    # )
 
     # define optimizer
     optimizer_cls = get_optimizer(args.optimizer)
@@ -716,7 +752,7 @@ if __name__ == "__main__":
         accelerator.init_trackers(
             "finetune_babilong_qa1_rmt_vary_n_seg_iter_tasks_curriculum",
             init_kwargs={
-                "wandb": {"name": os.environ['WANDB_RUN_NAME']},
+                "wandb": {"name": os.environ["WANDB_RUN_NAME"]},
             },
         )
 
