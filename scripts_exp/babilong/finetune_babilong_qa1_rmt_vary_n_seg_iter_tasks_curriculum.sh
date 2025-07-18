@@ -35,7 +35,7 @@ for TASK_DATASET in qa1_single-supporting-fact; do
 
   for LR in 1e-05; do
 
-    for SEGMENT_SIZE in 512; do # size of one segment in tokens
+    for SEGMENT_SIZE in 1024; do # size of one segment in tokens
       # MAX_N_SEGMENTSS=(0 1 2 4 6 8 16 32)
       MAX_N_SEGMENTSS=(0 1 2 4)
       # BSS=(32 32 16 16 8 8 4 2)

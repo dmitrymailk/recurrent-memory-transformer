@@ -33,7 +33,7 @@
         "--num_mem_tokens=16",
         "--max_n_segments=2",
         "--vary_n_segments",
-        "--batch_size=1",
+        "--batch_size=4",
         "--gradient_accumulation_steps=2", // Calculated: TBS / (BS * NP) = 2 / (1 * 1)
         "--num_training_steps=10000", // Calculated: ITERS * 2 = 5000 * 2
         "--iters=5000",

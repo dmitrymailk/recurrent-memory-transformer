@@ -49,253 +49,264 @@ from lm_experiments_tools.utils import (
     prepare_run,
 )  # noqa: E402
 
+
 # limit # of CPU threads to be used per pytorch worker, otherwise it might use all cpus and throttle gpus
 # > 2 fails cause of https://github.com/pytorch/pytorch/issues/56615
 # need to upgrade to torch>1.8.1
 # torch.set_num_threads(4)
 # all gpus set with CUDA_VISIBLE_DEVICES are visible to process, indexing from 0 to ...
 # torch.cuda.set_device(hvd.local_rank())
+def create_parser():
+    parser = HfArgumentParser(TrainerArgs)
+    parser.add_argument(
+        "--task_dataset",
+        type=str,
+        help="Task name",
+        default="qa1_single-supporting-fact",
+    )
+    parser.add_argument(
+        "--noise_dataset", type=str, help="Task name", default="wikitext"
+    )
+    parser.add_argument(
+        "--noise_dataset_split", type=str, help="Task name", default=None
+    )
+    parser.add_argument(
+        "--babi_path",
+        type=str,
+        help="path to babi folder",
+        default="data/tasks_1-20_v1-2/en-10k",
+    )
 
-parser = HfArgumentParser(TrainerArgs)
-parser.add_argument(
-    "--task_dataset", type=str, help="Task name", default="qa1_single-supporting-fact"
-)
-parser.add_argument("--noise_dataset", type=str, help="Task name", default="wikitext")
-parser.add_argument("--noise_dataset_split", type=str, help="Task name", default=None)
-parser.add_argument(
-    "--babi_path",
-    type=str,
-    help="path to babi folder",
-    default="data/tasks_1-20_v1-2/en-10k",
-)
+    parser.add_argument(
+        "--validate_only",
+        action="store_true",
+        default=False,
+        help="Skip training and run only validation. (default: False)",
+    )
+    parser.add_argument(
+        "--working_dir",
+        type=str,
+        default=".",
+        help="working dir, should be a dir with t5-experiments repo (default: .)",
+    )
+    parser.add_argument("--seed", type=int, default=42, help="random seed")
+    parser.add_argument(
+        "--show_valid_examples",
+        type=int,
+        default=0,
+        help="how many valid examples to show during training (default: 0)",
+    )
+    parser.add_argument(
+        "--block_size",
+        type=int,
+        default=128,
+        help="max size of language modeling block",
+    )
+    parser.add_argument(
+        "--history_size",
+        type=int,
+        default=0,
+        help="max number of past tokens for each block",
+    )
+    parser.add_argument(
+        "--data_n_workers",
+        type=int,
+        default=2,
+        help="number of dataloader workers (default: 2)",
+    )
 
+    parser.add_argument(
+        "--input_prefix",
+        type=str,
+        default="",
+        help='add task prefix to an input string (default: "")',
+    )
 
-parser.add_argument(
-    "--validate_only",
-    action="store_true",
-    default=False,
-    help="Skip training and run only validation. (default: False)",
-)
-parser.add_argument(
-    "--working_dir",
-    type=str,
-    default=".",
-    help="working dir, should be a dir with t5-experiments repo (default: .)",
-)
-parser.add_argument("--seed", type=int, default=42, help="random seed")
-parser.add_argument(
-    "--show_valid_examples",
-    type=int,
-    default=0,
-    help="how many valid examples to show during training (default: 0)",
-)
-parser.add_argument(
-    "--block_size", type=int, default=128, help="max size of language modeling block"
-)
-parser.add_argument(
-    "--history_size",
-    type=int,
-    default=0,
-    help="max number of past tokens for each block",
-)
-parser.add_argument(
-    "--data_n_workers",
-    type=int,
-    default=2,
-    help="number of dataloader workers (default: 2)",
-)
+    # model args
+    parser.add_argument(
+        "--from_pretrained", type=str, help='model name in HF Model Hub (default: "")'
+    )
+    parser.add_argument(
+        "--model_cfg", type=str, help='path to model configuration file (default: "")'
+    )
+    parser.add_argument(
+        "--model_cls",
+        type=str,
+        default="transformers:BertForPreTraining",
+        help="model class name to use (default: transformers:BertForPreTraining)",
+    )
+    parser.add_argument(
+        "--memory_cell_cls", type=str, default=None, help="cell class for RMT"
+    )
+    parser.add_argument(
+        "--recurrent_wrapper_cls",
+        type=str,
+        default=None,
+        help="recurrent wrapper class for RMT",
+    )
+    parser.add_argument(
+        "--model_cpt", type=str, default=None, help="pretrained model checkpoint path"
+    )
+    parser.add_argument(
+        "--model_type",
+        type=str,
+        default="encoder-decoder",
+        help="model type, encoder, encoder-decoder, decoder, affects preprocessing "
+        "(default: encoder-decoder)",
+    )
 
-parser.add_argument(
-    "--input_prefix",
-    type=str,
-    default="",
-    help='add task prefix to an input string (default: "")',
-)
+    # Babilong parameters
+    parser.add_argument(
+        "--sample_size", type=int, default=None, help="max number of tokens in sample"
+    )
+    parser.add_argument(
+        "--max_n_facts",
+        type=int,
+        default=None,
+        help="drop samples with higher number of facts",
+    )
+    parser.add_argument(
+        "--task_start_pct",
+        type=float,
+        default=None,
+        help="left border of facts in sample, between 0 and 1",
+    )
+    parser.add_argument(
+        "--task_end_pct",
+        type=float,
+        default=None,
+        help="right border of facts in sample, between task_start_pct and 1",
+    )
 
-# model args
-parser.add_argument(
-    "--from_pretrained", type=str, help='model name in HF Model Hub (default: "")'
-)
-parser.add_argument(
-    "--model_cfg", type=str, help='path to model configuration file (default: "")'
-)
-parser.add_argument(
-    "--model_cls",
-    type=str,
-    default="transformers:BertForPreTraining",
-    help="model class name to use (default: transformers:BertForPreTraining)",
-)
-parser.add_argument(
-    "--memory_cell_cls", type=str, default=None, help="cell class for RMT"
-)
-parser.add_argument(
-    "--recurrent_wrapper_cls",
-    type=str,
-    default=None,
-    help="recurrent wrapper class for RMT",
-)
-parser.add_argument(
-    "--model_cpt", type=str, default=None, help="pretrained model checkpoint path"
-)
-parser.add_argument(
-    "--model_type",
-    type=str,
-    default="encoder-decoder",
-    help="model type, encoder, encoder-decoder, decoder, affects preprocessing "
-    "(default: encoder-decoder)",
-)
+    # RMT args
+    parser.add_argument(
+        "--segment_size",
+        type=int,
+        default=None,
+        help="maximal input size of the backbone model",
+    )
+    parser.add_argument(
+        "--num_mem_tokens", type=int, default=None, help="number of memory tokens."
+    )
+    parser.add_argument(
+        "--max_n_segments", type=int, default=1, help="maximal segment number"
+    )
+    parser.add_argument(
+        "--vary_n_segments",
+        action="store_true",
+        default=False,
+        help="randomly sample input size for each batch",
+    )
+    parser.add_argument(
+        "--mixed_length_ratio",
+        type=float,
+        default=0.0,
+        help="used for mixed length curriculum. "
+        "r > 0.0 means that we will start to sample batches with lengths <= max_n_segments",
+    )
+    parser.add_argument(
+        "--bptt_depth",
+        type=int,
+        default=-1,
+        help="max number of previous segments in gradient computation.",
+    )
+    parser.add_argument(
+        "--segment_alignment",
+        type=str,
+        help="way of aligning segments, one of right, left, center",
+        default=None,
+    )
+    parser.add_argument(
+        "--k2", type=int, default=-1, help="number of last segments used by backward"
+    )
+    parser.add_argument(
+        "--freeze_model_weights",
+        action="store_true",
+        default=False,
+        help="Stop training all model weights except memory layers",
+    )
+    parser.add_argument(
+        "--backbone_cpt", type=str, default=None, help="backbone model checkpoint path"
+    )
 
-# Babilong parameters
-parser.add_argument(
-    "--sample_size", type=int, default=None, help="max number of tokens in sample"
-)
-parser.add_argument(
-    "--max_n_facts",
-    type=int,
-    default=None,
-    help="drop samples with higher number of facts",
-)
-parser.add_argument(
-    "--task_start_pct",
-    type=float,
-    default=None,
-    help="left border of facts in sample, between 0 and 1",
-)
-parser.add_argument(
-    "--task_end_pct",
-    type=float,
-    default=None,
-    help="right border of facts in sample, between task_start_pct and 1",
-)
+    # tokenizer
+    # todo: add wordpiece tokenizers support?
+    parser.add_argument(
+        "--tokenizer",
+        type=str,
+        default=None,
+        help="path or name of pre-trained HF Tokenizer",
+    )
 
+    # optimizer args
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        default="AdamW",
+        help="optimizer name: AdamW, Adafactor. (default: AdamW)",
+    )
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=0.0,
+        help="optimizer weight decay (default: 0.0)",
+    )
+    parser.add_argument(
+        "--scale_parameter",
+        action="store_true",
+        default=False,
+        help="Adafactor scale_parameter (default: False)",
+    )
+    parser.add_argument(
+        "--relative_step",
+        action="store_true",
+        default=False,
+        help="Adafactor relative_step (default: False)",
+    )
+    parser.add_argument(
+        "--warmup_init",
+        action="store_true",
+        default=False,
+        help="Adafactor warmup_init (default: False)",
+    )
 
-# RMT args
-parser.add_argument(
-    "--segment_size",
-    type=int,
-    default=None,
-    help="maximal input size of the backbone model",
-)
-parser.add_argument(
-    "--num_mem_tokens", type=int, default=None, help="number of memory tokens."
-)
-parser.add_argument(
-    "--max_n_segments", type=int, default=1, help="maximal segment number"
-)
-parser.add_argument(
-    "--vary_n_segments",
-    action="store_true",
-    default=False,
-    help="randomly sample input size for each batch",
-)
-parser.add_argument(
-    "--mixed_length_ratio",
-    type=float,
-    default=0.0,
-    help="used for mixed length curriculum. "
-    "r > 0.0 means that we will start to sample batches with lengths <= max_n_segments",
-)
-parser.add_argument(
-    "--bptt_depth",
-    type=int,
-    default=-1,
-    help="max number of previous segments in gradient computation.",
-)
-parser.add_argument(
-    "--segment_alignment",
-    type=str,
-    help="way of aligning segments, one of right, left, center",
-    default=None,
-)
-parser.add_argument(
-    "--k2", type=int, default=-1, help="number of last segments used by backward"
-)
-parser.add_argument(
-    "--freeze_model_weights",
-    action="store_true",
-    default=False,
-    help="Stop training all model weights except memory layers",
-)
-parser.add_argument(
-    "--backbone_cpt", type=str, default=None, help="backbone model checkpoint path"
-)
+    # LoRA args
+    parser.add_argument("--use_lora", action="store_true", default=False, help="")
+    parser.add_argument("--lora_attn_dim", type=int, default=8, help="")
+    parser.add_argument("--lora_attn_alpha", type=int, default=32, help="")
+    parser.add_argument("--lora_dropout", type=float, default=0.1, help="")
+    parser.add_argument("--layers_pattern", type=str, default=None, help="")
 
-# tokenizer
-# todo: add wordpiece tokenizers support?
-parser.add_argument(
-    "--tokenizer",
-    type=str,
-    default=None,
-    help="path or name of pre-trained HF Tokenizer",
-)
+    # Parallel Adapter args
+    parser.add_argument("--use_adapter", action="store_true", default=False, help="")
+    parser.add_argument("--adapter_bottleneck_dim", type=int, default=512, help="")
+    parser.add_argument("--adapter_dropout", type=float, default=0.1, help="")
+    parser.add_argument("--adapter_scale", type=float, default=4.0, help="")
 
-# optimizer args
-parser.add_argument(
-    "--optimizer",
-    type=str,
-    default="AdamW",
-    help="optimizer name: AdamW, Adafactor. (default: AdamW)",
-)
-parser.add_argument(
-    "--weight_decay",
-    type=float,
-    default=0.0,
-    help="optimizer weight decay (default: 0.0)",
-)
-parser.add_argument(
-    "--scale_parameter",
-    action="store_true",
-    default=False,
-    help="Adafactor scale_parameter (default: False)",
-)
-parser.add_argument(
-    "--relative_step",
-    action="store_true",
-    default=False,
-    help="Adafactor relative_step (default: False)",
-)
-parser.add_argument(
-    "--warmup_init",
-    action="store_true",
-    default=False,
-    help="Adafactor warmup_init (default: False)",
-)
-
-# LoRA args
-parser.add_argument("--use_lora", action="store_true", default=False, help="")
-parser.add_argument("--lora_attn_dim", type=int, default=8, help="")
-parser.add_argument("--lora_attn_alpha", type=int, default=32, help="")
-parser.add_argument("--lora_dropout", type=float, default=0.1, help="")
-parser.add_argument("--layers_pattern", type=str, default=None, help="")
-
-# Parallel Adapter args
-parser.add_argument("--use_adapter", action="store_true", default=False, help="")
-parser.add_argument("--adapter_bottleneck_dim", type=int, default=512, help="")
-parser.add_argument("--adapter_dropout", type=float, default=0.1, help="")
-parser.add_argument("--adapter_scale", type=float, default=4.0, help="")
-
-# Dataset args
-parser.add_argument(
-    "--pile_subset_names",
-    type=str,
-    default=None,
-    help="use only these subsets of The PILE, separated by ;",
-)
-parser.add_argument(
-    "--min_tokens_in_document",
-    type=int,
-    default=None,
-    help="do not use documents shorter than this value",
-)
-parser.add_argument(
-    "--max_tokens_in_document",
-    type=int,
-    default=None,
-    help="do not use documents longer than this value",
-)
+    # Dataset args
+    parser.add_argument(
+        "--pile_subset_names",
+        type=str,
+        default=None,
+        help="use only these subsets of The PILE, separated by ;",
+    )
+    parser.add_argument(
+        "--min_tokens_in_document",
+        type=int,
+        default=None,
+        help="do not use documents shorter than this value",
+    )
+    parser.add_argument(
+        "--max_tokens_in_document",
+        type=int,
+        default=None,
+        help="do not use documents longer than this value",
+    )
+    return parser
 
 
 if __name__ == "__main__":
+    parser = create_parser()
     args = parser.parse_args()
     # set current working dir
     args.working_dir = str(Path(args.working_dir).expanduser().absolute())
@@ -361,9 +372,10 @@ if __name__ == "__main__":
     task_dataset_test = TaskDataset(test_path, max_n_facts=args.max_n_facts)
 
     # background text
-    qa_margin = 20  # leave space for questions and answers
+    # qa_margin = 20  # leave space for questions and answers
+    qa_margin = 16  # leave space for questions and answers
     if (
-        args.vary_n_segments
+        args.vary_n_segments  # True
     ):  # choose sample sizes according to each number of segments up to args.max_n_segments
         # train_sample_size = [int(args.sample_size / i) for i in range(1, args.max_n_segments + 1)]
         train_sample_size = [
@@ -428,7 +440,9 @@ if __name__ == "__main__":
     eos_token = tokenizer.eos_token_id
 
     def collate_fn(batch):
-        targets = [torch.tensor(b["target_tokens"]) for b in batch]
+        targets = [
+            torch.tensor(b["target_tokens"]) for b in batch
+        ]  # [tensor([37648,  3823]), tensor([36269]), tensor([15813,  6607]), tensor([37648,  3823]), tensor([31810]), tensor([36269]), tensor([15813,  6607]), tensor([36269])]
         input_ids = [
             torch.tensor(
                 b["input_tokens"]
@@ -459,6 +473,7 @@ if __name__ == "__main__":
         labels_mask = pad_sequence(labels_mask, padding_value=0, batch_first=True)
 
         collated = {}
+        # input_ids=torch.Size([8, 1017])
         collated["input_ids"] = collated["labels"] = input_ids
         collated["input_ids_generate"] = gen_inputs
         collated["labels_mask"] = labels_mask
@@ -539,8 +554,7 @@ if __name__ == "__main__":
                 # args.from_pretrained, use_safetensors=False
                 args.from_pretrained,
                 torch_dtype=torch.bfloat16,
-                attn_implementation='flash_attention_2'
-                
+                attn_implementation="flash_attention_2",
             )
 
     if args.use_lora:
@@ -565,26 +579,28 @@ if __name__ == "__main__":
         logger.info(f"Loaded baseline state dict from: {args.backbone_cpt}")
 
     # Pass memory settings to pretrained model
-    if args.num_mem_tokens is not None:
+    if args.num_mem_tokens is not None:  # 16 tokens
         # modeling_rmt.language_modeling:MemoryCell
         memory_cell_cls = get_cls_by_name(args.memory_cell_cls)
         # modeling_rmt.language_modeling:RecurrentWrapper
         recurrent_wrapper_cls = get_cls_by_name(args.recurrent_wrapper_cls)
         logger.info(f"Wrapping in: {memory_cell_cls} and {recurrent_wrapper_cls}")
 
-        cell = memory_cell_cls(model, args.num_mem_tokens)
+        cell = memory_cell_cls(
+            model, args.num_mem_tokens
+        )  # базовая модель с дополнительным вектором
         if args.segment_alignment not in {None, "left"}:
             logger.info(f"Using custom segment alignment: {args.segment_alignment}")
 
-        max_n_segments = args.max_n_segments
+        max_n_segments = args.max_n_segments  # 2
         if max_n_segments in {-1, None}:
             max_n_segments = np.ceil(args.sample_size / args.segment_size)
         model = recurrent_wrapper_cls(
             cell,
-            segment_size=args.segment_size,
-            max_n_segments=max_n_segments,
-            segment_alignment=args.segment_alignment,
-            k2=args.k2,
+            segment_size=args.segment_size,  # 512
+            max_n_segments=max_n_segments,  # 2
+            segment_alignment=args.segment_alignment,  # None
+            k2=args.k2,  # -1
         )
 
         ## load cpt of rmt

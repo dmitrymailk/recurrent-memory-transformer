@@ -12,33 +12,35 @@ class MemoryCell(torch.nn.Module):
         self.create_memory(num_mem_tokens)
 
     def create_memory(self, num_mem_tokens):
-        self.num_mem_tokens = num_mem_tokens
-        embeddings = self.model.get_input_embeddings()
-        memory_dim = getattr(self.model.config, "n_embd", self.model.config.hidden_size)
+        self.num_mem_tokens = num_mem_tokens  # 16
+        embeddings = self.model.get_input_embeddings()  # torch.Size([50257, 768])
+        memory_dim = getattr(
+            self.model.config, "n_embd", self.model.config.hidden_size
+        )  # 768
         memory_weights = (
             torch.randn((num_mem_tokens, memory_dim)) * embeddings.weight.data.std()
-        )
+        )  # torch.Size([16, 768])
         self.register_parameter(
             "memory", torch.nn.Parameter(memory_weights, requires_grad=True)
         )
 
-        self.read_memory_position = range(num_mem_tokens)
-        self.write_memory_position = range(-num_mem_tokens, 0)
+        self.read_memory_position = range(num_mem_tokens)  # range(0, 16)
+        self.write_memory_position = range(-num_mem_tokens, 0)  # range(-16, 0)
 
     def set_memory(self, input_shape):
         memory = self.memory.repeat(input_shape[0], 1, 1)
         return memory
 
     def forward(self, input_ids, memory_state=None, **kwargs):
-        if memory_state is None:
+        if memory_state is None:  # first segment=None, second segment=
             memory_state = self.set_memory(input_ids.shape)
-
+        # memory_state=torch.Size([4, 16, 768])
         seg_kwargs = self.process_input(
             input_ids, memory_state, write_mem=True, **kwargs
-        )
-        out = self.model(**seg_kwargs)
+        )  # inputs_embeds=torch.Size([4, 544, 768]),
+        out = self.model(**seg_kwargs)  # out.logits=torch.Size([4, 544, 50257])
         out, new_memory_state = self.process_output(out, **kwargs)
-
+        # out.logits=torch.Size([4, 512, 50257])
         return out, new_memory_state
 
     def generate(self, input_ids, memory_state, attention_mask=None, **generate_kwargs):
@@ -57,13 +59,13 @@ class MemoryCell(torch.nn.Module):
 
     def process_input(self, input_ids, memory_state, write_mem, **kwargs):
         seg_kwargs = dict(**kwargs)
-
+        # firts segment, input_ids=torch.Size([4, 512])
         inputs_embeds = kwargs.get("inputs_embeds")
-        if inputs_embeds is None:
+        if inputs_embeds is None:  # fist segment=None, second segment=
             inputs_embeds = self.model.get_input_embeddings()(input_ids)
-
-        if self.num_mem_tokens > 0:
-            if write_mem:
+        # inputs_embeds=torch.Size([4, 512, 768])
+        if self.num_mem_tokens > 0:  # True, 16
+            if write_mem:  # True, training
                 inputs_embeds = torch.cat(
                     [memory_state, inputs_embeds, memory_state], dim=1
                 )
@@ -71,11 +73,11 @@ class MemoryCell(torch.nn.Module):
                 inputs_embeds = torch.cat([memory_state, inputs_embeds], dim=1)
 
         seg_kwargs["input_ids"] = None
-        seg_kwargs["inputs_embeds"] = inputs_embeds
-        if kwargs.get("attention_mask") is not None:
+        seg_kwargs["inputs_embeds"] = inputs_embeds  # torch.Size([4, 544, 768])
+        if kwargs.get("attention_mask") is not None:  # True, torch.Size([4, 512])
             seg_kwargs["attention_mask"] = self.pad_attention_mask(
                 kwargs["attention_mask"], inputs_embeds.shape
-            )
+            )  # torch.Size([4, 544])
         seg_kwargs["output_hidden_states"] = True
         return seg_kwargs
 
@@ -90,7 +92,7 @@ class MemoryCell(torch.nn.Module):
             return mask
 
     def process_output(self, model_outputs, **kwargs):
-        if self.num_mem_tokens not in {0, None}:
+        if self.num_mem_tokens not in {0, None}:  # True
             out = CausalLMOutputWithCrossAttentions()
             memory_state = model_outputs.hidden_states[-1][:, -self.num_mem_tokens :]
             out["logits"] = model_outputs.logits[
@@ -118,7 +120,7 @@ class RecurrentWrapper(torch.nn.Module):
     def __init__(self, memory_cell, **rmt_kwargs):
         super().__init__()
         self.memory_cell = memory_cell
-        self.rmt_config = rmt_kwargs
+        self.rmt_config = rmt_kwargs  # {'segment_size': 512, 'max_n_segments': 2, 'segment_alignment': None, 'k2': -1}
 
     def forward(
         self,
@@ -130,13 +132,13 @@ class RecurrentWrapper(torch.nn.Module):
         output_attentions=None,
         output_hidden_states=None,
     ):
-        memory_state = None
+        memory_state = None  # input_ids=torch.Size([4, 1017]), inputs_embeds=None
         segmented = self.segment(
             input_ids=input_ids,
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-        )
-
+        )  # len(segmented)=2, segmented[0]['input_ids']=torch.Size([4, 512])
+        # segmented[1]['input_ids'].shape=torch.Size([4, 505])
         cell_outputs = []
         # print('\n\n\nForward: ', [s['input_ids'].shape for s in segmented])
         for seg_num, segment in enumerate(segmented):
@@ -186,12 +188,12 @@ class RecurrentWrapper(torch.nn.Module):
         return segments
 
     def split_tensor(self, tensor):
-        align = self.rmt_config.get("segment_alignment")
-        segment_size = self.rmt_config.get("segment_size")
-        if align in {"left", None}:
+        align = self.rmt_config.get("segment_alignment")  # None
+        segment_size = self.rmt_config.get("segment_size")  # 512
+        if align in {"left", None}:  # True
             split_inds = list(range(0, tensor.shape[1], segment_size)) + [
                 tensor.shape[1]
-            ]
+            ]  # [0, 512, 1017]
             segments = [
                 tensor[:, start:end] for (start, end) in zip(split_inds, split_inds[1:])
             ]
@@ -205,7 +207,7 @@ class RecurrentWrapper(torch.nn.Module):
             segments = torch.chunk(tensor, n_seg, dim=1)
         else:
             raise NotImplementedError
-        return segments
+        return segments  # [torch.Size([4, 512]), torch.Size([4, 505]), torch.Size([4, 512])]
 
     def process_outputs(self, cell_outputs, **kwargs):
         out = CausalLMOutputWithCrossAttentions()

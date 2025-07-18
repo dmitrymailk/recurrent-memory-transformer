@@ -397,7 +397,7 @@ class Trainer:
         else:
             self.model.eval()
 
-        if self.batch_transform_fn:
+        if self.batch_transform_fn: # False
             batch = self.batch_transform_fn(batch)
 
         batch_sizes = []
@@ -427,7 +427,7 @@ class Trainer:
                 with grad_sync_context(self.model):
                     subbatch = {
                         k: batch[k][j : j + self.args.batch_size] for k in batch
-                    }
+                    } # (subbatch["input_ids"]==50256).int().sum()/(4*1017)=0.1271
                     # filter items from batch that are not used by model forward
                     outputs = self.model(
                         **{
@@ -488,7 +488,7 @@ class Trainer:
                             batch_metrics_data[k] += [
                                 v.detach().cpu() if isinstance(v, torch.Tensor) else v
                             ]
-
+                    outputs = None
                     if is_train_mode:
                         # backward
                         self.accelerator.backward(loss)
