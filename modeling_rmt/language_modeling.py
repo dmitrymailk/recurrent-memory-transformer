@@ -63,11 +63,15 @@ class MemoryCell(torch.nn.Module):
         inputs_embeds = kwargs.get("inputs_embeds")
         if inputs_embeds is None:  # fist segment=None, second segment=
             inputs_embeds = self.model.get_input_embeddings()(input_ids)
-        # inputs_embeds=torch.Size([4, 512, 768])
         if self.num_mem_tokens > 0:  # True, 16
             if write_mem:  # True, training
                 inputs_embeds = torch.cat(
-                    [memory_state, inputs_embeds, memory_state], dim=1
+                    [
+                        memory_state,
+                        inputs_embeds,
+                        memory_state,
+                    ],
+                    dim=1,
                 )
             else:
                 inputs_embeds = torch.cat([memory_state, inputs_embeds], dim=1)
@@ -222,18 +226,20 @@ class RecurrentWrapper(torch.nn.Module):
         labels = kwargs.get("labels")
         if labels is not None:
             shift_labels = labels[..., 1:].contiguous()
-            shift_logits = full_logits[..., :-1, :].contiguous()
+            shift_logits = full_logits[..., :-1, :].contiguous() # full_logits=torch.Size([4, 1024, 50257]) 
             flat_labels = shift_labels.view(-1)
             flat_logits = shift_logits.view(-1, shift_logits.size(-1))
 
             loss_fct = CrossEntropyLoss()
             labels_mask = kwargs.get("labels_mask")
             if labels_mask is not None:
+                # тут логиты в размеров в 15, получается мы зря вычисляем огромную матрицу, а потом все выкидываем
+                # условно из 1024 токенов, берем только 15 ~ 15/1024=0.014
                 shift_mask = labels_mask[..., :-1].contiguous()
 
-                flat_labels = flat_labels[shift_mask.view(-1)]
-                flat_logits = flat_logits[shift_mask.view(-1)]
-
+                flat_labels = flat_labels[shift_mask.view(-1)] # torch.Size([15])
+                flat_logits = flat_logits[shift_mask.view(-1)] # torch.Size([15, 50257])
+            print(flat_logits.shape)
             out["loss"] = loss_fct(flat_logits, flat_labels)
             if out["loss"] is None:
                 raise ValueError

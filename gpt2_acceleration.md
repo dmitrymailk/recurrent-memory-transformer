@@ -1,3 +1,7 @@
+## gpt2
+
+#### baseline
+```bash
 #!/usr/bin/env bash
 # CUDA_VISIBLE_DEVICES=1,2 NP=2 ./finetune_babilong_baseline.sh
 set -e
@@ -230,3 +234,11 @@ for TASK_DATASET in qa1_single-supporting-fact; do
   done
 done
 echo "done"
+```
+- Train:   1%| | 47/5000 [01:03<1:33:08,  1.13s/it
+
+#### torch.compile (opt_1)
+- Train:   2%| | 106/5000 [02:13<1:32:13,  1.13s/it 
+
+#### torch.compile+float8 (opt_2) 
+Train:   2%| | 110/5000 [02:18<1:32:28,  1.13s/it,

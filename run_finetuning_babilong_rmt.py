@@ -453,6 +453,7 @@ if __name__ == "__main__":
             )
             for b in batch
         ]
+
         gen_inputs = [
             torch.tensor(b["input_tokens"] + b["question_tokens"] + [gen_token])
             for b in batch
@@ -471,6 +472,54 @@ if __name__ == "__main__":
         )
         attention_mask = pad_sequence(attention_mask, padding_value=0, batch_first=True)
         labels_mask = pad_sequence(labels_mask, padding_value=0, batch_first=True)
+
+        segments_amount = 2
+        segment_size = 512
+        last_part_len = (
+            input_ids.shape[1] - input_ids.shape[1] // segment_size * segment_size
+        )
+        need_pad = last_part_len % 16 != 0
+        #  pad for float8 support
+        if need_pad:
+            new_pad_tokens_amount = 16 * (last_part_len // 16 + 1) - last_part_len
+            new_pad_tokens = (
+                torch.ones(
+                    (input_ids.shape[0], new_pad_tokens_amount),
+                    device=input_ids.device,
+                )
+                * id_pad_value
+            ).to(input_ids.dtype)
+            input_ids = torch.cat(
+                [
+                    input_ids,
+                    new_pad_tokens,
+                ],
+                dim=1,
+            )
+            gen_inputs = torch.cat(
+                [
+                    gen_inputs,
+                    new_pad_tokens,
+                ],
+                dim=1,
+            )
+            new_attetion_mask = torch.zeros_like(new_pad_tokens).to(
+                attention_mask.dtype
+            )
+            attention_mask = torch.cat(
+                [
+                    attention_mask,
+                    new_attetion_mask,
+                ],
+                dim=1,
+            )
+            labels_mask = torch.cat(
+                [
+                    labels_mask,
+                    new_attetion_mask.to(labels_mask.dtype),
+                ],
+                dim=1,
+            )
 
         collated = {}
         # input_ids=torch.Size([8, 1017])
@@ -637,8 +686,8 @@ if __name__ == "__main__":
             return False
         return True
 
-    # from torchao.float8 import convert_to_float8_training, Float8LinearConfig
-    # from functools import partial
+    from torchao.float8 import convert_to_float8_training, Float8LinearConfig
+    from functools import partial
 
     # first_linear = None
     # last_linear = None
@@ -771,6 +820,13 @@ if __name__ == "__main__":
                 "wandb": {"name": os.environ["WANDB_RUN_NAME"]},
             },
         )
+
+    # for m in reversed(list(model.modules())):
+    #     if hasattr(m, "attn") and hasattr(m, "mlp"):
+    #         m.compile(
+    #             backend="inductor",
+    #             # mode="max-autotune",
+    #         )
 
     trainer = Trainer(
         args,

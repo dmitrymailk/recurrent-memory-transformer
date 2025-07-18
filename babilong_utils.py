@@ -245,9 +245,9 @@ class NoiseInjectionDataset(Dataset):
         flat = [i for s in updated_sample for i in s]
         tokens = [i for s in flat for i in s]
 
-        sample["input_tokens"] = tokens # len(sample['input_tokens'])=1008
-        sample["question_tokens"] = question_tok
-        sample["target_tokens"] = answer_tok
+        sample["input_tokens"] = tokens # len(sample['input_tokens'])=1008 иногда 496
+        sample["question_tokens"] = question_tok # len(question_tok)=5
+        sample["target_tokens"] = answer_tok # len(answer_tok)=2 иногда 1
 
         return sample
 
