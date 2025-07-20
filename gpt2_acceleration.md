@@ -235,17 +235,16 @@ for TASK_DATASET in qa1_single-supporting-fact; do
 done
 echo "done"
 ```
-- Train:   1%| | 100/5000 [01:03<1:33:08,  0.87it/s
-
-#### torch.compile (opt_1)
-- Train:   2%| | 106/5000 [02:13<1:32:13,  0.87it/s
-
-#### torch.compile+float8 (opt_2) 
-Train:   2%| | 110/5000 [02:18<1:32:28,  0.87it/s,
-
 
 - memory optimizations
-- default: 8858MB
-- убрал вычисление логитов для токенов, которые мы и так выкидываем для бабилонга: 1.14it/s, 7622MB  
-- добавил torch.compile, cut-cross-entropy, отменил вычисление логитов для ненужных токенов 1.15it/sб 6602MB
-- добавил torch.compile, float8, cut-cross-entropy, отменил вычисление логитов для ненужных токенов 1.15it/sб 6570MB
+- default: 8858MB (opt_1)
+- убрал вычисление логитов для токенов, которые мы и так выкидываем для бабилонга: 1.14it/s, 7622MB  (opt_2)
+- добавил torch.compile, cut-cross-entropy, отменил вычисление логитов для ненужных токенов 1.15it/sб 6602MB (opt_3)
+- добавил torch.compile, float8, cut-cross-entropy, отменил вычисление логитов для ненужных токенов 1.15it/sб 6570MB (opt_4)
+- добавил torch.compile opt_5
+
+
+##### A100 (llama3.2_1b)
+- opt_1 - 21/5000 [02:50<6:40:31,  0.21it/s], 33.61GB
+- opt_5 -  | 42/5000 [04:32<6:40:05,  0.21it/s] 33.61GB
+- opt_3 -  50/5000 [04:09<5:31:40,  0.25it/s] 21.24 - убрал deepspeed, вернулся к обычному accelerate

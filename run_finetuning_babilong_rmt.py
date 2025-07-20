@@ -21,6 +21,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data.distributed import DistributedSampler
 
 from peft import get_peft_model, LoraConfig, TaskType
+import transformers
 
 # load_dotenv()
 from babilong_utils import TaskDataset, SentenceSampler, NoiseInjectionDataset
@@ -315,6 +316,7 @@ if __name__ == "__main__":
     accelerator = accelerate.Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         log_with="wandb",
+        mixed_precision="bf16",
     )
 
     from accelerate.logging import get_logger
@@ -676,38 +678,38 @@ if __name__ == "__main__":
     #         for param in module.parameters():
     #             param.set_(param.contiguous())
     # make_contiguous(model)
-    def filter_linear_layers(module, fqn, first_layer_name=None, last_layer_name=None):
-        if isinstance(module, torch.nn.Linear):
-            if module.in_features % 16 != 0 or module.out_features % 16 != 0:
-                return False
-        # For stability reasons, we skip the first and last linear layers
-        # Otherwise can lead to the model not training or converging properly
-        if fqn in (first_layer_name, last_layer_name):
-            return False
-        return True
+    # def filter_linear_layers(module, fqn, first_layer_name=None, last_layer_name=None):
+    #     if isinstance(module, torch.nn.Linear):
+    #         if module.in_features % 16 != 0 or module.out_features % 16 != 0:
+    #             return False
+    #     # For stability reasons, we skip the first and last linear layers
+    #     # Otherwise can lead to the model not training or converging properly
+    #     if fqn in (first_layer_name, last_layer_name):
+    #         return False
+    #     return True
 
-    from torchao.float8 import convert_to_float8_training, Float8LinearConfig
-    from functools import partial
+    # from torchao.float8 import convert_to_float8_training, Float8LinearConfig
+    # from functools import partial
 
-    first_linear = None
-    last_linear = None
-    for name, module in model.named_modules():
-        if isinstance(module, torch.nn.Linear):
-            if first_linear is None:
-                first_linear = name
-            last_linear = name
+    # first_linear = None
+    # last_linear = None
+    # for name, module in model.named_modules():
+    #     if isinstance(module, torch.nn.Linear):
+    #         if first_linear is None:
+    #             first_linear = name
+    #         last_linear = name
 
-    func = partial(
-        filter_linear_layers,
-        first_layer_name=first_linear,
-        last_layer_name=last_linear,
-    )
-    config = Float8LinearConfig.from_recipe_name("tensorwise")
-    convert_to_float8_training(
-        model,
-        config=config,
-        module_filter_fn=func,
-    )
+    # func = partial(
+    #     filter_linear_layers,
+    #     first_layer_name=first_linear,
+    #     last_layer_name=last_linear,
+    # )
+    # config = Float8LinearConfig.from_recipe_name("tensorwise")
+    # convert_to_float8_training(
+    #     model,
+    #     config=config,
+    #     module_filter_fn=func,
+    # )
 
     # define optimizer
     optimizer_cls = get_optimizer(args.optimizer)
@@ -770,6 +772,13 @@ if __name__ == "__main__":
     # - compute metrics on batch lvl
     # - add support of HF metrics and turn off aggregation in case if metric has .add_batch method
     # scrolls_metric = datasets.load_metric(scrolls_metric_path, args.task_name, keep_in_memory=True)
+    model = model.to(torch.bfloat16)
+    for m in reversed(list(model.modules())):
+        if hasattr(m, "attn") and hasattr(m, "mlp"):
+            m.compile(
+                backend="inductor",
+                mode="max-autotune",
+            )
 
     model, optimizer = accelerator.prepare(model, optimizer)
     # model, optimizer, _ = accelerator.prepare(model, optimizer, train_dataloader)
@@ -892,13 +901,6 @@ if __name__ == "__main__":
                 "wandb": {"name": os.environ["WANDB_RUN_NAME"]},
             },
         )
-
-    for m in reversed(list(model.modules())):
-        if hasattr(m, "attn") and hasattr(m, "mlp"):
-            m.compile(
-                backend="inductor",
-                # mode="max-autotune",
-            )
 
     trainer = Trainer(
         args,

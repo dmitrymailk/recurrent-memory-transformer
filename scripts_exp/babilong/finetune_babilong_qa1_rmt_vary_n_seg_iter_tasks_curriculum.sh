@@ -6,6 +6,7 @@ cd ../..
 CUBLAS_WORKSPACE_CONFIG=:4096:2
 # CUDA_LAUNCH_BLOCKING=1
 CUDA_LAUNCH_BLOCKING=0
+CUDA_VISIBLE_DEVICES=0
 
 MODEL_TYPE=decoder
 MEMORY_CELL=modeling_rmt.language_modeling:MemoryCell
@@ -14,9 +15,9 @@ BACKBONE_CLS=transformers:AutoModelForCausalLM
 NOISE_DATASET=pg19
 METRIC=exact_match
 
-MODEL_NAME=gpt2 # backbone model
+# MODEL_NAME=gpt2 # backbone model
 # MODEL_NAME=unsloth/Llama-3.2-1B-Instruct # backbone model
-# MODEL_NAME=unsloth/Llama-3.2-1B # backbone model
+MODEL_NAME=unsloth/Llama-3.2-1B # backbone model
 
 ITERS=5000
 TBS=64
@@ -67,12 +68,12 @@ for TASK_DATASET in qa1_single-supporting-fact; do
 
             NP=$NP
             # ACCEL_CONFIG=/home/jovyan/rmt/babilong/accel_configs/accelerate/deepspeed_bf16_tbs${TBS}bs${BS}g${GRAD_ACC_STEPS}c1.0np${NP}.yaml
-            ACCEL_CONFIG=/code/accel_configs/accelerate/deepspeed_bf16_tbs${TBS}bs${BS}g${GRAD_ACC_STEPS}c1.0np${NP}.yaml
-            cd accel_configs/
-            python create_config.py \
-              --bf16 \
-              --train_batch_size $TBS --train_micro_batch_size_per_gpu $BS --gradient_accumulation_steps $GRAD_ACC_STEPS --np $NP --gradient_clipping 1.0
-            cd ..
+            # ACCEL_CONFIG=/code/accel_configs/accelerate/deepspeed_bf16_tbs${TBS}bs${BS}g${GRAD_ACC_STEPS}c1.0np${NP}.yaml
+            # cd accel_configs/
+            # python create_config.py \
+            #   --bf16 \
+            #   --train_batch_size $TBS --train_micro_batch_size_per_gpu $BS --gradient_accumulation_steps $GRAD_ACC_STEPS --np $NP --gradient_clipping 1.0
+            # cd ..
             export WANDB_RUN_NAME="$TASK_DATASET MEMORY_SIZE $MEMORY_SIZE SEGMENT_SIZE $SEGMENT_SIZE MAX_N_SEGMENTS $MAX_N_SEGMENTS"
             echo RUNNING: TASK_DATASET $WANDB_RUN_NAME
             echo SAMPLE_SIZE $SAMPLE_SIZE MODEL_NAME $MODEL_NAME LR $LR N $N
@@ -194,7 +195,8 @@ for TASK_DATASET in qa1_single-supporting-fact; do
             #     --seed:  (calculated from N=6)
             #     --clip_grad_norm: 1.0
 
-            accelerate launch --config_file $ACCEL_CONFIG --main_process_port 29007 run_finetuning_babilong_rmt.py \
+            # accelerate launch --config_file $ACCEL_CONFIG --main_process_port 29007 run_finetuning_babilong_rmt.py \
+            python run_finetuning_babilong_rmt.py \
               --task_dataset $TASK_DATASET \
               --noise_dataset $NOISE_DATASET \
               --babi_path $dataset_folder \
