@@ -3,6 +3,8 @@ import torch
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 import transformers
+import gc
+from transformers.models.gpt2 import GPT2LMHeadModel
 
 
 class MemoryCell(torch.nn.Module):
@@ -38,6 +40,8 @@ class MemoryCell(torch.nn.Module):
         seg_kwargs = self.process_input(
             input_ids, memory_state, write_mem=True, **kwargs
         )  # inputs_embeds=torch.Size([4, 544, 768]),
+        # print(seg_kwargs["inputs_embeds"].shape)
+        # seg_kwargs['labels_mask'] = kwargs['labels_mask']
         out = self.model(**seg_kwargs)  # out.logits=torch.Size([4, 544, 50257])
         out, new_memory_state = self.process_output(out, **kwargs)
         # out.logits=torch.Size([4, 512, 50257])
@@ -74,7 +78,13 @@ class MemoryCell(torch.nn.Module):
                     dim=1,
                 )
             else:
-                inputs_embeds = torch.cat([memory_state, inputs_embeds], dim=1)
+                inputs_embeds = torch.cat(
+                    [
+                        memory_state,
+                        inputs_embeds,
+                    ],
+                    dim=1,
+                )
 
         seg_kwargs["input_ids"] = None
         seg_kwargs["inputs_embeds"] = inputs_embeds  # torch.Size([4, 544, 768])
@@ -82,6 +92,11 @@ class MemoryCell(torch.nn.Module):
             seg_kwargs["attention_mask"] = self.pad_attention_mask(
                 kwargs["attention_mask"], inputs_embeds.shape
             )  # torch.Size([4, 544])
+        if kwargs.get("labels_mask") is not None:  # True, torch.Size([4, 512])
+            seg_kwargs["labels_mask"] = self.pad_labels_mask(
+                kwargs["labels_mask"], inputs_embeds.shape
+            )  # torch.Size([4, 544])
+        # seg_kwargs["output_hidden_states"] = True
         seg_kwargs["output_hidden_states"] = True
         return seg_kwargs
 
@@ -95,6 +110,16 @@ class MemoryCell(torch.nn.Module):
             ] = attention_mask
             return mask
 
+    def pad_labels_mask(self, attention_mask, shape):
+        if self.num_mem_tokens in {0, None}:
+            return attention_mask
+        else:
+            mask = torch.zeros(*shape[:2], dtype=torch.int64).to(attention_mask.device)
+            mask[
+                :, self.num_mem_tokens : self.num_mem_tokens + attention_mask.shape[1]
+            ] = attention_mask
+            return mask.bool()
+
     def process_output(self, model_outputs, **kwargs):
         if self.num_mem_tokens not in {0, None}:  # True
             out = CausalLMOutputWithCrossAttentions()
@@ -102,6 +127,30 @@ class MemoryCell(torch.nn.Module):
             out["logits"] = model_outputs.logits[
                 :, self.num_mem_tokens : -self.num_mem_tokens
             ]
+            # out["logits"] = model_outputs.logits
+
+            if kwargs.get("output_hidden_states"):
+                out["hidden_states"] = [
+                    lh[:, self.num_mem_tokens : -self.num_mem_tokens]
+                    for lh in model_outputs.hidden_states
+                ]
+            if kwargs.get("output_attentions"):
+                out["attentions"] = model_outputs["attentions"]
+        else:
+            memory_state = None
+            out = model_outputs
+
+        return out, memory_state
+
+    def _process_output(self, model_outputs, **kwargs):
+        # new version
+        if self.num_mem_tokens not in {0, None}:  # True
+            out = CausalLMOutputWithCrossAttentions()
+            memory_state = model_outputs.hidden_states[-1][:, -self.num_mem_tokens :]
+            # out["logits"] = model_outputs.logits[
+            #     :, self.num_mem_tokens : -self.num_mem_tokens
+            # ]
+            out["logits"] = model_outputs.logits
 
             if kwargs.get("output_hidden_states"):
                 out["hidden_states"] = [
@@ -141,13 +190,19 @@ class RecurrentWrapper(torch.nn.Module):
             input_ids=input_ids,
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
+            labels_mask=labels_mask,
         )  # len(segmented)=2, segmented[0]['input_ids']=torch.Size([4, 512])
+        # inputs_embeds = None # не помогает оптимизировать память
+        # gc.collect()
         # segmented[1]['input_ids'].shape=torch.Size([4, 505])
         cell_outputs = []
         # print('\n\n\nForward: ', [s['input_ids'].shape for s in segmented])
         for seg_num, segment in enumerate(segmented):
             cell_out, memory_state = self.memory_cell(
-                **segment, memory_state=memory_state, output_hidden_states=True
+                **segment,
+                memory_state=memory_state,
+                output_hidden_states=True,
+                # labels_mask=labels_mask,
             )
             cell_outputs.append(cell_out)
             memory_state = self.manage_gradients(memory_state, seg_num)
@@ -226,7 +281,9 @@ class RecurrentWrapper(torch.nn.Module):
         labels = kwargs.get("labels")
         if labels is not None:
             shift_labels = labels[..., 1:].contiguous()
-            shift_logits = full_logits[..., :-1, :].contiguous() # full_logits=torch.Size([4, 1024, 50257]) 
+            shift_logits = full_logits[
+                ..., :-1, :
+            ].contiguous()  # full_logits=torch.Size([4, 1024, 50257])
             flat_labels = shift_labels.view(-1)
             flat_logits = shift_logits.view(-1, shift_logits.size(-1))
 
@@ -237,9 +294,14 @@ class RecurrentWrapper(torch.nn.Module):
                 # условно из 1024 токенов, берем только 15 ~ 15/1024=0.014
                 shift_mask = labels_mask[..., :-1].contiguous()
 
-                flat_labels = flat_labels[shift_mask.view(-1)] # torch.Size([15])
-                flat_logits = flat_logits[shift_mask.view(-1)] # torch.Size([15, 50257])
-            print(flat_logits.shape)
+                flat_labels = flat_labels[shift_mask.view(-1)]  # torch.Size([15])
+                flat_logits = flat_logits[
+                    shift_mask.view(-1)
+                ]  # torch.Size([15, 50257])
+            # print(flat_logits.shape)
+            # flat_labels = tensor([37648,  3823, 50256, 50256, 36269, 50256, 50256, 15813,  6607, 50256, 50256, 37648,  3823, 50256, 50256], device='cuda:0')
+            # modified
+            # flat_labels = tensor([37648,  3823, 50256, 50256, 36269, 50256, 50256, 15813,  6607, 50256, 50256, 37648,  3823, 50256, 50256], device='cuda:0')
             out["loss"] = loss_fct(flat_logits, flat_labels)
             if out["loss"] is None:
                 raise ValueError
@@ -253,6 +315,64 @@ class RecurrentWrapper(torch.nn.Module):
         if kwargs.get("output_hidden_states"):
             segment_keys.append("hidden_states")
             out["hidden_states"] = full_hidden_states
+
+        for seg_num, o in enumerate(cell_outputs):
+            for key, value in o.items():
+                if any([sk in key for sk in segment_keys]):
+                    out[f"{key}_{seg_num}"] = value
+
+        return out
+
+    def _process_outputs(self, cell_outputs, **kwargs):
+        # new version
+        out = CausalLMOutputWithCrossAttentions()
+        full_logits = torch.cat(
+            [o.logits for o in cell_outputs if not o.logits is None],
+            dim=0,
+        )
+        # full_hidden_states = tuple(
+        #     [
+        #         torch.cat(layer_hs, dim=1)
+        #         for layer_hs in zip(*[o.hidden_states for o in cell_outputs])
+        #     ]
+        # )
+
+        labels = kwargs.get("labels")
+        if labels is not None:
+            shift_labels = labels[..., 1:].contiguous()
+            # shift_logits = full_logits[
+            #     ..., :-1, :
+            # ].contiguous()  # full_logits=torch.Size([4, 1024, 50257])
+            shift_logits = (
+                full_logits.contiguous()
+            )  # full_logits=torch.Size([4, 1024, 50257])
+            flat_labels = shift_labels.view(-1)
+            flat_logits = shift_logits.view(-1, shift_logits.size(-1))
+
+            loss_fct = CrossEntropyLoss()
+            labels_mask = kwargs.get("labels_mask")
+            if labels_mask is not None:
+                shift_mask = labels_mask[..., :-1].contiguous()
+
+                flat_labels = flat_labels[shift_mask.view(-1)]  # torch.Size([15])
+                # flat_logits = flat_logits[
+                #     shift_mask.view(-1)
+                # ]  # torch.Size([15, 50257])
+            # print(flat_logits.shape)
+            # tensor([37648,  3823, 50256, 50256, 36269, 50256, 50256, 15813,  6607, 50256, 50256, 37648,  3823, 50256, 50256], device='cuda:0')
+            out["loss"] = loss_fct(flat_logits, flat_labels)
+            if out["loss"] is None:
+                raise ValueError
+        else:
+            out["loss"] = 0
+
+        out["logits"] = full_logits
+        segment_keys = ["loss", "logits"]
+        if kwargs.get("output_attentions"):
+            segment_keys.append("attentions")
+        # if kwargs.get("output_hidden_states"):
+        #     segment_keys.append("hidden_states")
+        #     out["hidden_states"] = full_hidden_states
 
         for seg_num, o in enumerate(cell_outputs):
             for key, value in o.items():

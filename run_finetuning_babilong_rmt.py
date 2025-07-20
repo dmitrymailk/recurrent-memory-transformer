@@ -733,9 +733,10 @@ if __name__ == "__main__":
         data["target_text"] = batch["target_text"]
         if "logits" in output:
             data["predictions"] = torch.argmax(output["logits"].detach(), dim=-1)
-            data["predicted_labels"] = [
-                p[m] for p, m in zip(data["predictions"], batch["labels_mask"])
-            ]
+            # data["predicted_labels"] = [
+            #     p[m] for p, m in zip(data["predictions"], batch["labels_mask"])
+            # ]
+            data["predicted_labels"] = data["predictions"]
         if "generation_outputs" in output:
             data["generation_outputs"] = output["generation_outputs"]
         return data
@@ -791,15 +792,15 @@ if __name__ == "__main__":
                     for text, pred in zip(data["target_text"], predicted_labels)
                 ]
             )
-            if args.show_valid_examples > 0:
-                for i in range(min(args.show_valid_examples, len(y))):
-                    logger.info(f"y: {y[i][-50:]}")
-                    logger.info(f"p: {p[i][-50:]}")
+            # if args.show_valid_examples > 0:
+            #     for i in range(min(args.show_valid_examples, len(y))):
+            #         logger.info(f"y: {y[i][-50:]}")
+            #         logger.info(f"p: {p[i][-50:]}")
 
-                    logger.info(f"y_text: {data['target_text'][i]}")
-                    logger.info(f"p_text: {predicted_labels[i]}")
+            #         logger.info(f"y_text: {data['target_text'][i]}")
+            #         logger.info(f"p_text: {predicted_labels[i]}")
 
-                    logger.info("-" * 50)
+            #         logger.info("-" * 50)
         try:
             perplexity = math.exp(data["loss"].mean())
         except OverflowError:
