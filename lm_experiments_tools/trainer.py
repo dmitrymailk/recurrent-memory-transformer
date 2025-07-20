@@ -397,7 +397,7 @@ class Trainer:
         else:
             self.model.eval()
 
-        if self.batch_transform_fn: # False
+        if self.batch_transform_fn:  # False
             batch = self.batch_transform_fn(batch)
 
         batch_sizes = []
@@ -427,7 +427,7 @@ class Trainer:
                 with grad_sync_context(self.model):
                     subbatch = {
                         k: batch[k][j : j + self.args.batch_size] for k in batch
-                    } # (subbatch["input_ids"]==50256).int().sum()/(4*1017)=0.1271
+                    }  # (subbatch["input_ids"]==50256).int().sum()/(4*1017)=0.1271
                     # filter items from batch that are not used by model forward
                     outputs = self.model(
                         **{
@@ -686,6 +686,7 @@ class Trainer:
             total=self.args.iters,
             desc="Train",
             disable=(not self.accelerator.is_main_process),
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_noinv_fmt}]",
         )
         pbar.update(self.n_iter)
 

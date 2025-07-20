@@ -725,6 +725,24 @@ if __name__ == "__main__":
     # if args.model_cpt or args.backbone_cpt:
     #     optimizer.load_state_dict(cpt['optimizer_state_dict'])
 
+    # MODIFIED
+    def _keep_for_metrics_fn(batch, output):
+        # select data from batch and model output that would be used to compute metrics
+        data = {}
+        data["labels"] = batch["labels"]
+        data["loss"] = output["loss"]
+        data["target_text"] = batch["target_text"]
+        if "logits" in output:
+            data["predictions"] = torch.argmax(output["logits"].detach(), dim=-1)
+            data["predicted_labels"] = [
+                p[m] for p, m in zip(data["predictions"], batch["labels_mask"])
+            ]
+            data["predicted_labels"] = data["predictions"]
+        if "generation_outputs" in output:
+            data["generation_outputs"] = output["generation_outputs"]
+        return data
+
+    # ORIGINAL
     def keep_for_metrics_fn(batch, output):
         # select data from batch and model output that would be used to compute metrics
         data = {}
@@ -733,10 +751,9 @@ if __name__ == "__main__":
         data["target_text"] = batch["target_text"]
         if "logits" in output:
             data["predictions"] = torch.argmax(output["logits"].detach(), dim=-1)
-            # data["predicted_labels"] = [
-            #     p[m] for p, m in zip(data["predictions"], batch["labels_mask"])
-            # ]
-            data["predicted_labels"] = data["predictions"]
+            data["predicted_labels"] = [
+                p[m] for p, m in zip(data["predictions"], batch["labels_mask"])
+            ]
         if "generation_outputs" in output:
             data["generation_outputs"] = output["generation_outputs"]
         return data
@@ -757,7 +774,8 @@ if __name__ == "__main__":
     model, optimizer = accelerator.prepare(model, optimizer)
     # model, optimizer, _ = accelerator.prepare(model, optimizer, train_dataloader)
 
-    def metrics_fn(data):
+    # MODIFIED
+    def _metrics_fn(data):
         # compute metrics based on stored labels, predictions, ...
         metrics = {}
         if "generation_outputs" in data:
@@ -801,6 +819,59 @@ if __name__ == "__main__":
             #         logger.info(f"p_text: {predicted_labels[i]}")
 
             #         logger.info("-" * 50)
+        try:
+            perplexity = math.exp(data["loss"].mean())
+        except OverflowError:
+            perplexity = float("inf")
+        metrics["perplexity"] = perplexity
+
+        return metrics
+
+    # ORIGINAL
+    def metrics_fn(data):
+        # compute metrics based on stored labels, predictions, ...
+        metrics = {}
+        if "generation_outputs" in data:
+            generation_outputs = tokenizer.batch_decode(
+                [d for d in data["generation_outputs"]], add_special_tokens=False
+            )
+            for i, o in enumerate(generation_outputs):
+                if "<|endoftext|>" in o:
+                    # print(f"gt: {data['target_text'][i]}, generated {o}")
+                    generation_outputs[i] = o.split("<|endoftext|>")[1].strip()
+
+            metrics["exact_match"] = np.mean(
+                [
+                    text == pred
+                    for text, pred in zip(data["target_text"], generation_outputs)
+                ]
+            )
+
+        elif "predictions" in data:
+            y, p = data["labels"], data["predictions"]
+            predicted_labels = tokenizer.batch_decode(
+                data["predicted_labels"], add_special_tokens=False
+            )
+            for i, l in enumerate(predicted_labels):
+                if "<|endoftext|>" in l:
+                    eos_ind = predicted_labels[i].index("<|endoftext|>")
+                    predicted_labels[i] = predicted_labels[i][:eos_ind]
+
+            metrics["exact_match"] = np.mean(
+                [
+                    text == pred
+                    for text, pred in zip(data["target_text"], predicted_labels)
+                ]
+            )
+            if args.show_valid_examples > 0:
+                for i in range(min(args.show_valid_examples, len(y))):
+                    logger.info(f"y: {y[i][-50:]}")
+                    logger.info(f"p: {p[i][-50:]}")
+
+                    logger.info(f"y_text: {data['target_text'][i]}")
+                    logger.info(f"p_text: {predicted_labels[i]}")
+
+                    logger.info("-" * 50)
         try:
             perplexity = math.exp(data["loss"].mean())
         except OverflowError:

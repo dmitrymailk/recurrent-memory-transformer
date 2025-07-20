@@ -235,7 +235,7 @@ for TASK_DATASET in qa1_single-supporting-fact; do
 done
 echo "done"
 ```
-- Train:   1%| | 47/5000 [01:03<1:33:08,  1.13s/it
+- Train:   1%| | 100/5000 [01:03<1:33:08,  0.87it/s
 
 #### torch.compile (opt_1)
 - Train:   2%| | 106/5000 [02:13<1:32:13,  1.13s/it 
