@@ -4,7 +4,8 @@ set -e
 cd ../..
 
 CUBLAS_WORKSPACE_CONFIG=:4096:2
-CUDA_LAUNCH_BLOCKING=1
+# CUDA_LAUNCH_BLOCKING=1
+CUDA_LAUNCH_BLOCKING=0
 
 MODEL_TYPE=decoder
 MEMORY_CELL=modeling_rmt.language_modeling:MemoryCell

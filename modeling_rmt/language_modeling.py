@@ -5,6 +5,11 @@ from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 import transformers
 import gc
 from transformers.models.gpt2 import GPT2LMHeadModel
+from cut_cross_entropy.transformers.llama import (
+    cce_forward,
+    linear_cross_entropy,
+    _PATCH_OPTS,
+)
 
 
 class MemoryCell(torch.nn.Module):
@@ -120,8 +125,8 @@ class MemoryCell(torch.nn.Module):
             ] = attention_mask
             return mask.bool()
 
-    def process_output(self, model_outputs, **kwargs):
-        # ORIGINAL
+    def _process_output(self, model_outputs, **kwargs):
+        """ORIGINAL"""
         if self.num_mem_tokens not in {0, None}:
             out = CausalLMOutputWithCrossAttentions()
             memory_state = model_outputs.hidden_states[-1][:, -self.num_mem_tokens :]
@@ -142,8 +147,8 @@ class MemoryCell(torch.nn.Module):
 
         return out, memory_state
 
-    def _process_output(self, model_outputs, **kwargs):
-        # new version
+    def process_output(self, model_outputs, **kwargs):
+        """new version"""
         if self.num_mem_tokens not in {0, None}:  # True
             out = CausalLMOutputWithCrossAttentions()
             memory_state = model_outputs.hidden_states[-1][:, -self.num_mem_tokens :]
@@ -268,7 +273,8 @@ class RecurrentWrapper(torch.nn.Module):
             raise NotImplementedError
         return segments  # [torch.Size([4, 512]), torch.Size([4, 505]), torch.Size([4, 512])]
 
-    def process_outputs(self, cell_outputs, **kwargs):
+    def _process_outputs(self, cell_outputs, **kwargs):
+        """ORIGINAL"""
         out = CausalLMOutputWithCrossAttentions()
         full_logits = torch.cat([o.logits for o in cell_outputs], dim=1)
         full_hidden_states = tuple(
@@ -314,8 +320,8 @@ class RecurrentWrapper(torch.nn.Module):
 
         return out
 
-    def _process_outputs(self, cell_outputs, **kwargs):
-        # new version
+    def process_outputs(self, cell_outputs, **kwargs):
+        """new version"""
         out = CausalLMOutputWithCrossAttentions()
         # full_logits = torch.cat(
         #     [o.logits for o in cell_outputs if not o.logits is None],
@@ -357,8 +363,17 @@ class RecurrentWrapper(torch.nn.Module):
             # tensor([37648,  3823, 50256, 50256, 36269, 50256, 50256, 15813,  6607, 50256, 50256, 37648,  3823, 50256, 50256], device='cuda:0')
             # loss= tensor(13.1875, device='cuda:0', dtype=torch.bfloat16, grad_fn=<NllLossBackward0>)
             # self.memory_cell.model.lm_head
-            flat_logits = self.memory_cell.model.lm_head(flat_logits)
-            out["loss"] = loss_fct(flat_logits, flat_labels)
+            # flat_logits = self.memory_cell.model.lm_head(flat_logits)
+            loss = linear_cross_entropy(
+                flat_logits,
+                self.memory_cell.model.lm_head.weight,
+                flat_labels,
+                shift=False,
+                impl=_PATCH_OPTS.impl,
+                reduction=_PATCH_OPTS.reduction,
+            )
+            # out["loss"] = loss_fct(flat_logits, flat_labels)
+            out["loss"] = loss
             if out["loss"] is None:
                 raise ValueError
         else:

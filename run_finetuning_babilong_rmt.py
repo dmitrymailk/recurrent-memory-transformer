@@ -689,25 +689,25 @@ if __name__ == "__main__":
     from torchao.float8 import convert_to_float8_training, Float8LinearConfig
     from functools import partial
 
-    # first_linear = None
-    # last_linear = None
-    # for name, module in model.named_modules():
-    #     if isinstance(module, torch.nn.Linear):
-    #         if first_linear is None:
-    #             first_linear = name
-    #         last_linear = name
+    first_linear = None
+    last_linear = None
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            if first_linear is None:
+                first_linear = name
+            last_linear = name
 
-    # func = partial(
-    #     filter_linear_layers,
-    #     first_layer_name=first_linear,
-    #     last_layer_name=last_linear,
-    # )
-    # config = Float8LinearConfig.from_recipe_name("tensorwise")
-    # convert_to_float8_training(
-    #     model,
-    #     config=config,
-    #     module_filter_fn=func,
-    # )
+    func = partial(
+        filter_linear_layers,
+        first_layer_name=first_linear,
+        last_layer_name=last_linear,
+    )
+    config = Float8LinearConfig.from_recipe_name("tensorwise")
+    convert_to_float8_training(
+        model,
+        config=config,
+        module_filter_fn=func,
+    )
 
     # define optimizer
     optimizer_cls = get_optimizer(args.optimizer)
@@ -726,7 +726,7 @@ if __name__ == "__main__":
     #     optimizer.load_state_dict(cpt['optimizer_state_dict'])
 
     # MODIFIED
-    def _keep_for_metrics_fn(batch, output):
+    def keep_for_metrics_fn(batch, output):
         # select data from batch and model output that would be used to compute metrics
         data = {}
         data["labels"] = batch["labels"]
@@ -734,16 +734,16 @@ if __name__ == "__main__":
         data["target_text"] = batch["target_text"]
         if "logits" in output:
             data["predictions"] = torch.argmax(output["logits"].detach(), dim=-1)
-            data["predicted_labels"] = [
-                p[m] for p, m in zip(data["predictions"], batch["labels_mask"])
-            ]
+            # data["predicted_labels"] = [
+            #     p[m] for p, m in zip(data["predictions"], batch["labels_mask"])
+            # ]
             data["predicted_labels"] = data["predictions"]
         if "generation_outputs" in output:
             data["generation_outputs"] = output["generation_outputs"]
         return data
 
     # ORIGINAL
-    def keep_for_metrics_fn(batch, output):
+    def _keep_for_metrics_fn(batch, output):
         # select data from batch and model output that would be used to compute metrics
         data = {}
         data["labels"] = batch["labels"]
@@ -775,7 +775,7 @@ if __name__ == "__main__":
     # model, optimizer, _ = accelerator.prepare(model, optimizer, train_dataloader)
 
     # MODIFIED
-    def _metrics_fn(data):
+    def metrics_fn(data):
         # compute metrics based on stored labels, predictions, ...
         metrics = {}
         if "generation_outputs" in data:
@@ -828,7 +828,7 @@ if __name__ == "__main__":
         return metrics
 
     # ORIGINAL
-    def metrics_fn(data):
+    def _metrics_fn(data):
         # compute metrics based on stored labels, predictions, ...
         metrics = {}
         if "generation_outputs" in data:
@@ -893,12 +893,12 @@ if __name__ == "__main__":
             },
         )
 
-    # for m in reversed(list(model.modules())):
-    #     if hasattr(m, "attn") and hasattr(m, "mlp"):
-    #         m.compile(
-    #             backend="inductor",
-    #             # mode="max-autotune",
-    #         )
+    for m in reversed(list(model.modules())):
+        if hasattr(m, "attn") and hasattr(m, "mlp"):
+            m.compile(
+                backend="inductor",
+                # mode="max-autotune",
+            )
 
     trainer = Trainer(
         args,
