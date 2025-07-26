@@ -360,10 +360,11 @@ def collate_fn(batch, id_pad_value, gen_token, eos_token):
 if __name__ == "__main__":
     parser = create_parser()
     args = parser.parse_args()
-    # ухудшает стабильность
-    # torch.manual_seed(args.seed)
-    # random.seed(args.seed)
-    # np.random.seed(args.seed)
+    opt_level = args.opt_level
+    if opt_level == "opt_2":
+        torch.manual_seed(args.seed)
+        random.seed(args.seed)
+        np.random.seed(args.seed)
     # set current working dir
     args.working_dir = str(Path(args.working_dir).expanduser().absolute())
     os.chdir(args.working_dir)
@@ -465,6 +466,21 @@ if __name__ == "__main__":
         shuffle=True,
         random_seed=42,
     )
+    if opt_level == "opt_2":
+        noise_sampler_train = SentenceSampler(
+            noise_dataset_train,
+            tokenizer=tokenizer,
+            max_sentence_len=max_sentence_len,
+            shuffle=True,
+            random_seed=args.seed,
+        )
+        noise_sampler_test = SentenceSampler(
+            noise_dataset_test,
+            tokenizer=tokenizer,
+            max_sentence_len=max_sentence_len,
+            shuffle=True,
+            random_seed=args.seed,
+        )
 
     train_dataset = NoiseInjectionDataset(
         task_dataset=task_dataset_train,
@@ -566,7 +582,7 @@ if __name__ == "__main__":
     #         model = model_cls(config=model_cfg)
     #     else:
     logger.info(f"Loading pretrained model: {args.from_pretrained}")
-    opt_level = args.opt_level
+
     model = None
     match opt_level:
         case "opt_1":
@@ -575,6 +591,11 @@ if __name__ == "__main__":
                 use_safetensors=False,
             )
         case "opt_2":
+            model = model_cls.from_pretrained(
+                args.from_pretrained,
+                use_safetensors=False,
+            )
+        case "opt_3":
             model = model_cls.from_pretrained(
                 args.from_pretrained,
                 use_safetensors=False,

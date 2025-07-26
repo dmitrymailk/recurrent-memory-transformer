@@ -28,6 +28,8 @@ mkdir -p $model_base_folder
 mkdir -p $dataset_folder
 mkdir -p $noise_folder
 
+opt_level="opt_2"
+
 for TASK_DATASET in qa1_single-supporting-fact;
 do
   
@@ -112,8 +114,8 @@ do
             --early_stopping_patience 15 \
             --seed $(($N+42)) \
             --clip_grad_norm 1.0 \
-            --opt_name "opt_1_MEM_SIZE_$MEMORY_SIZE SEG_SIZE_$SEGMENT_SIZE MAX_N_SEG_$MAX_N_SEGMENTS" \
-            --opt_level opt_1
+            --opt_name "$opt_level MEM_SIZE_$MEMORY_SIZE SEG_SIZE_$SEGMENT_SIZE MAX_N_SEG_$MAX_N_SEGMENTS" \
+            --opt_level $opt_level
             # --use_generate_on_valid \
             
           done

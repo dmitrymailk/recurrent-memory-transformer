@@ -130,18 +130,19 @@ echo "done"
 - 14:51<1:04:22,  1.06it/s,
 - 23.34GB
 Проблемы с изначальным кодом что результаты отличаются от запусков и сидов.
-Если например добавить следующий код, сходимость станет медленее.
-- https://wandb.ai/dimweb/finetune_babilong_qa1_rmt_vary_n_seg_iter_tasks_curriculum/runs/yns3274r?nw=nwuserdimweb
-```python
-torch.manual_seed(args.seed)
-random.seed(args.seed)
-np.random.seed(args.seed)
-```
-
-Вероятно это как-то связано с инициализацией памяти.
 
 Также если запускать оригинальный код, на середине обучения лоссы и метрики accuracy сильно разнятся. 
 Например 112к шагов
 - 1) 0.91
 - 2) 0.82
 - 3) 0.51
+
+### opt_2 (gpt2, default, set seed)
+- поставил везде сиды и написал 
+```python
+torch.manual_seed(args.seed)
+random.seed(args.seed)
+np.random.seed(args.seed)
+```
+- в семплер тоже передаю seed, но графики от запусков отличаются.
+- решил отказаться. критерием того что ничего не сломалось является достижение 95% и более на valid
