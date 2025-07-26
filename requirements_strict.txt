@@ -1,0 +1,10 @@
+xformers==0.0.30
+torch==2.7.0
+diffusers==0.33.1
+wandb==0.20.1
+ipykernel
+transformers==4.52.3
+nbformat==5.10.4
+accelerate==1.7.0
+datasets==3.6.0
+hf_transfer==0.1.9
