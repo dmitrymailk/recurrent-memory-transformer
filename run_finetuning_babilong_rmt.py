@@ -67,6 +67,12 @@ def create_parser():
         default="opt_1",
     )
     parser.add_argument(
+        "--opt_name",
+        type=str,
+        help="opt_name",
+        default="None",
+    )
+    parser.add_argument(
         "--task_dataset",
         type=str,
         help="Task name",
@@ -354,6 +360,10 @@ def collate_fn(batch, id_pad_value, gen_token, eos_token):
 if __name__ == "__main__":
     parser = create_parser()
     args = parser.parse_args()
+    # ухудшает стабильность
+    # torch.manual_seed(args.seed)
+    # random.seed(args.seed)
+    # np.random.seed(args.seed)
     # set current working dir
     args.working_dir = str(Path(args.working_dir).expanduser().absolute())
     os.chdir(args.working_dir)
@@ -556,12 +566,21 @@ if __name__ == "__main__":
     #         model = model_cls(config=model_cfg)
     #     else:
     logger.info(f"Loading pretrained model: {args.from_pretrained}")
-    model = model_cls.from_pretrained(
-        args.from_pretrained,
-        use_safetensors=False,
-        # torch_dtype=torch.bfloat16,
-        # attn_implementation="flash_attention_2",
-    )
+    opt_level = args.opt_level
+    model = None
+    match opt_level:
+        case "opt_1":
+            model = model_cls.from_pretrained(
+                args.from_pretrained,
+                use_safetensors=False,
+            )
+        case "opt_2":
+            model = model_cls.from_pretrained(
+                args.from_pretrained,
+                use_safetensors=False,
+                torch_dtype=torch.bfloat16,
+                attn_implementation="flash_attention_2",
+            )
 
     if args.use_lora:
         peft_config = LoraConfig(
@@ -737,7 +756,7 @@ if __name__ == "__main__":
         accelerator.init_trackers(
             "finetune_babilong_qa1_rmt_vary_n_seg_iter_tasks_curriculum",
             init_kwargs={
-                "wandb": {"name": str(args.opt_level)},
+                "wandb": {"name": str(args.opt_name)},
             },
         )
     trainer = Trainer(
