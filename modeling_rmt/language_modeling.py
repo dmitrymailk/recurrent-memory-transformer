@@ -19,7 +19,8 @@ class MemoryCell(torch.nn.Module):
             torch.randn((num_mem_tokens, memory_dim)) * embeddings.weight.data.std()
         )
         self.register_parameter(
-            "memory", torch.nn.Parameter(memory_weights, requires_grad=True)
+            "memory",
+            torch.nn.Parameter(memory_weights, requires_grad=True),
         )
 
         self.read_memory_position = range(num_mem_tokens)

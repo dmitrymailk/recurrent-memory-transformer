@@ -29,9 +29,20 @@ from transformers.models.llama.modeling_llama import (
     LlamaModel,
     LlamaForCausalLM,
 )
+from typing import Callable, Optional, Tuple, Union
+from transformers.cache_utils import Cache
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 # load_dotenv()
 from babilong_utils import TaskDataset, SentenceSampler, NoiseInjectionDataset
+from modeling_rmt.language_modeling import MemoryCell, RecurrentWrapper
+from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
+from torch.nn import CrossEntropyLoss
+from cut_cross_entropy.transformers.llama import (
+    cce_forward,
+    linear_cross_entropy,
+    _PATCH_OPTS,
+)
 
 logger_fmt = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 logging.basicConfig(format=logger_fmt, level=logging.INFO)
@@ -331,6 +342,71 @@ def create_parser():
     return parser
 
 
+def forward_v1(
+    self,
+    input_ids: Optional[torch.LongTensor] = None,
+    attention_mask: Optional[torch.Tensor] = None,
+    position_ids: Optional[torch.LongTensor] = None,
+    past_key_values: Optional[Cache] = None,
+    inputs_embeds: Optional[torch.FloatTensor] = None,
+    labels: Optional[torch.LongTensor] = None,
+    use_cache: Optional[bool] = None,
+    output_attentions: Optional[bool] = None,
+    output_hidden_states: Optional[bool] = None,
+    cache_position: Optional[torch.LongTensor] = None,
+    logits_to_keep: Union[int, torch.Tensor] = 0,
+    **kwargs,
+) -> CausalLMOutputWithPast:
+    output_attentions = (
+        output_attentions
+        if output_attentions is not None
+        else self.config.output_attentions
+    )
+    output_hidden_states = (
+        output_hidden_states
+        if output_hidden_states is not None
+        else self.config.output_hidden_states
+    )
+
+    # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+    outputs = self.model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        past_key_values=past_key_values,
+        inputs_embeds=inputs_embeds,
+        use_cache=use_cache,
+        output_attentions=output_attentions,
+        output_hidden_states=output_hidden_states,
+        cache_position=cache_position,
+        **kwargs,
+    )
+
+    # hidden_states = outputs.last_hidden_state
+    # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+    # slice_indices = (
+    #     slice(-logits_to_keep, None)
+    #     if isinstance(logits_to_keep, int)
+    #     else logits_to_keep
+    # )
+    logits = None
+    # logits = self.lm_head(hidden_states[:, slice_indices, :])
+
+    loss = None
+    if labels is not None:
+        loss = self.loss_function(
+            logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs
+        )
+
+    return CausalLMOutputWithPast(
+        loss=loss,
+        logits=logits,
+        past_key_values=outputs.past_key_values,
+        hidden_states=outputs.hidden_states,
+        attentions=outputs.attentions,
+    )
+
+
 # def collate_fn(batch):
 def collate_fn(batch, id_pad_value, gen_token, eos_token, args):
     targets = [torch.tensor(b["target_tokens"]) for b in batch]
@@ -368,6 +444,8 @@ def collate_fn(batch, id_pad_value, gen_token, eos_token, args):
     need_pad = last_part_len % 16 != 0 and args.opt_level in [
         "opt_3",
         "opt_4",
+        "opt_6",
+        "opt_7",
     ]
     #  pad for float8 support
     if need_pad:
@@ -638,6 +716,26 @@ if __name__ == "__main__":
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
     )
+    original_forwards = {
+        "LlamaForCausalLM": {
+            "class": LlamaForCausalLM,
+            "original": LlamaForCausalLM.forward,
+            "custom": None,
+            "attr_name": "forward",
+        },
+        "MemoryCell": {
+            "class": MemoryCell,
+            "original": MemoryCell.process_output,
+            "custom": None,
+            "attr_name": "process_output",
+        },
+        "RecurrentWrapper": {
+            "class": RecurrentWrapper,
+            "original": RecurrentWrapper.process_outputs,
+            "custom": None,
+            "attr_name": "process_outputs",
+        },
+    }
     match opt_level:
         case "opt_2":
             for m in reversed(list(model.modules())):
@@ -731,6 +829,435 @@ if __name__ == "__main__":
                         backend="inductor",
                         mode="max-autotune",
                     )
+        case "opt_5":
+            model = model.to(torch.bfloat16)
+            # original_forward = LlamaForCausalLM.forward
+            LlamaForCausalLM.forward = forward_v1
+            original_forwards["LlamaForCausalLM"]["custom"] = forward_v1
+
+            def process_output_mem_cell(self, model_outputs, **kwargs):
+                """new version"""
+                if self.num_mem_tokens not in {0, None}:  # True
+                    out = CausalLMOutputWithCrossAttentions()
+                    memory_state = model_outputs.hidden_states[-1][
+                        :, -self.num_mem_tokens :
+                    ]
+                    # out["logits"] = model_outputs.logits[
+                    #     :, self.num_mem_tokens : -self.num_mem_tokens
+                    # ]
+                    out["logits"] = model_outputs.logits
+
+                    if kwargs.get("output_hidden_states"):
+                        out["hidden_states"] = [
+                            lh[:, self.num_mem_tokens : -self.num_mem_tokens]
+                            for lh in model_outputs.hidden_states
+                        ]
+                    if kwargs.get("output_attentions"):
+                        out["attentions"] = model_outputs["attentions"]
+                else:
+                    memory_state = None
+                    out = model_outputs
+
+                return out, memory_state
+
+            MemoryCell.process_output = process_output_mem_cell
+            original_forwards["MemoryCell"]["custom"] = process_output_mem_cell
+
+            def process_outputs_recurrent_wrapper(self, cell_outputs, **kwargs):
+                """new version"""
+                out = CausalLMOutputWithCrossAttentions()
+                # full_logits = torch.cat(
+                #     [o.logits for o in cell_outputs if not o.logits is None],
+                #     dim=0,
+                # )
+                # full_hidden_states = tuple(
+                #     [
+                #         torch.cat(layer_hs, dim=1)
+                #         for layer_hs in zip(*[o.hidden_states for o in cell_outputs])
+                #     ]
+                # )
+                total_hidden_states = torch.cat(
+                    [item.hidden_states[-1] for item in cell_outputs],
+                    dim=1,
+                )
+
+                labels = kwargs.get("labels")
+                if labels is not None:
+                    shift_labels = labels[..., 1:].contiguous()
+                    shift_logits = total_hidden_states[
+                        ..., :-1, :
+                    ].contiguous()  # full_logits=torch.Size([4, 1024, 50257])
+                    # shift_logits = (
+                    #     full_logits.contiguous()
+                    # )  # full_logits=torch.Size([4, 1024, 50257])
+                    flat_labels = shift_labels.view(-1)
+                    flat_logits = shift_logits.view(-1, shift_logits.size(-1))
+
+                    # loss_fct = CrossEntropyLoss()
+                    labels_mask = kwargs.get("labels_mask")
+                    if labels_mask is not None:
+                        shift_mask = labels_mask[..., :-1].contiguous()
+
+                        flat_labels = flat_labels[
+                            shift_mask.view(-1)
+                        ]  # torch.Size([15])
+                        flat_logits = flat_logits[
+                            shift_mask.view(-1)
+                        ]  # torch.Size([15, 50257])
+                    # print(flat_logits.shape)
+                    # tensor([37648,  3823, 50256, 50256, 36269, 50256, 50256, 15813,  6607, 50256, 50256, 37648,  3823, 50256, 50256], device='cuda:0')
+                    # loss= tensor(13.1875, device='cuda:0', dtype=torch.bfloat16, grad_fn=<NllLossBackward0>)
+                    # self.memory_cell.model.lm_head
+                    # flat_logits = self.memory_cell.model.lm_head(flat_logits)
+                    loss = linear_cross_entropy(
+                        flat_logits,
+                        self.memory_cell.model.lm_head.weight,
+                        flat_labels,
+                        shift=False,
+                        impl=_PATCH_OPTS.impl,
+                        reduction=_PATCH_OPTS.reduction,
+                    )
+                    # out["loss"] = loss_fct(flat_logits, flat_labels)
+                    out["loss"] = loss
+                    if out["loss"] is None:
+                        raise ValueError
+                else:
+                    out["loss"] = 0
+
+                # out["logits"] = full_logits
+                # out["logits"] = flat_logits
+                segment_keys = ["loss", "logits"]
+                if kwargs.get("output_attentions"):
+                    segment_keys.append("attentions")
+                # if kwargs.get("output_hidden_states"):
+                #     segment_keys.append("hidden_states")
+                #     out["hidden_states"] = full_hidden_states
+
+                for seg_num, o in enumerate(cell_outputs):
+                    for key, value in o.items():
+                        if any([sk in key for sk in segment_keys]):
+                            out[f"{key}_{seg_num}"] = value
+
+                return out
+
+            RecurrentWrapper.process_outputs = process_outputs_recurrent_wrapper
+            original_forwards["RecurrentWrapper"][
+                "custom"
+            ] = process_outputs_recurrent_wrapper
+        case "opt_6":
+            model = model.to(torch.bfloat16)
+            # original_forward = LlamaForCausalLM.forward
+            LlamaForCausalLM.forward = forward_v1
+            original_forwards["LlamaForCausalLM"]["custom"] = forward_v1
+
+            def process_output_mem_cell(self, model_outputs, **kwargs):
+                """new version"""
+                if self.num_mem_tokens not in {0, None}:  # True
+                    out = CausalLMOutputWithCrossAttentions()
+                    memory_state = model_outputs.hidden_states[-1][
+                        :, -self.num_mem_tokens :
+                    ]
+                    # out["logits"] = model_outputs.logits[
+                    #     :, self.num_mem_tokens : -self.num_mem_tokens
+                    # ]
+                    out["logits"] = model_outputs.logits
+
+                    if kwargs.get("output_hidden_states"):
+                        out["hidden_states"] = [
+                            lh[:, self.num_mem_tokens : -self.num_mem_tokens]
+                            for lh in model_outputs.hidden_states
+                        ]
+                    if kwargs.get("output_attentions"):
+                        out["attentions"] = model_outputs["attentions"]
+                else:
+                    memory_state = None
+                    out = model_outputs
+
+                return out, memory_state
+
+            MemoryCell.process_output = process_output_mem_cell
+            original_forwards["MemoryCell"]["custom"] = process_output_mem_cell
+
+            def process_outputs_recurrent_wrapper(self, cell_outputs, **kwargs):
+                """new version"""
+                out = CausalLMOutputWithCrossAttentions()
+                # full_logits = torch.cat(
+                #     [o.logits for o in cell_outputs if not o.logits is None],
+                #     dim=0,
+                # )
+                # full_hidden_states = tuple(
+                #     [
+                #         torch.cat(layer_hs, dim=1)
+                #         for layer_hs in zip(*[o.hidden_states for o in cell_outputs])
+                #     ]
+                # )
+                total_hidden_states = torch.cat(
+                    [item.hidden_states[-1] for item in cell_outputs],
+                    dim=1,
+                )
+
+                labels = kwargs.get("labels")
+                if labels is not None:
+                    shift_labels = labels[..., 1:].contiguous()
+                    shift_logits = total_hidden_states[
+                        ..., :-1, :
+                    ].contiguous()  # full_logits=torch.Size([4, 1024, 50257])
+                    # shift_logits = (
+                    #     full_logits.contiguous()
+                    # )  # full_logits=torch.Size([4, 1024, 50257])
+                    flat_labels = shift_labels.view(-1)
+                    flat_logits = shift_logits.view(-1, shift_logits.size(-1))
+
+                    # loss_fct = CrossEntropyLoss()
+                    labels_mask = kwargs.get("labels_mask")
+                    if labels_mask is not None:
+                        shift_mask = labels_mask[..., :-1].contiguous()
+
+                        flat_labels = flat_labels[
+                            shift_mask.view(-1)
+                        ]  # torch.Size([15])
+                        flat_logits = flat_logits[
+                            shift_mask.view(-1)
+                        ]  # torch.Size([15, 50257])
+                    # print(flat_logits.shape)
+                    # tensor([37648,  3823, 50256, 50256, 36269, 50256, 50256, 15813,  6607, 50256, 50256, 37648,  3823, 50256, 50256], device='cuda:0')
+                    # loss= tensor(13.1875, device='cuda:0', dtype=torch.bfloat16, grad_fn=<NllLossBackward0>)
+                    # self.memory_cell.model.lm_head
+                    # flat_logits = self.memory_cell.model.lm_head(flat_logits)
+                    loss = linear_cross_entropy(
+                        flat_logits,
+                        self.memory_cell.model.lm_head.weight,
+                        flat_labels,
+                        shift=False,
+                        impl=_PATCH_OPTS.impl,
+                        reduction=_PATCH_OPTS.reduction,
+                    )
+                    # out["loss"] = loss_fct(flat_logits, flat_labels)
+                    out["loss"] = loss
+                    if out["loss"] is None:
+                        raise ValueError
+                else:
+                    out["loss"] = 0
+
+                # out["logits"] = full_logits
+                # out["logits"] = flat_logits
+                segment_keys = ["loss", "logits"]
+                if kwargs.get("output_attentions"):
+                    segment_keys.append("attentions")
+                # if kwargs.get("output_hidden_states"):
+                #     segment_keys.append("hidden_states")
+                #     out["hidden_states"] = full_hidden_states
+
+                for seg_num, o in enumerate(cell_outputs):
+                    for key, value in o.items():
+                        if any([sk in key for sk in segment_keys]):
+                            out[f"{key}_{seg_num}"] = value
+
+                return out
+
+            RecurrentWrapper.process_outputs = process_outputs_recurrent_wrapper
+            original_forwards["RecurrentWrapper"][
+                "custom"
+            ] = process_outputs_recurrent_wrapper
+
+            def filter_linear_layers(
+                module, fqn, first_layer_name=None, last_layer_name=None
+            ):
+                if isinstance(module, torch.nn.Linear):
+                    if module.in_features % 16 != 0 or module.out_features % 16 != 0:
+                        return False
+                # For stability reasons, we skip the first and last linear layers
+                # Otherwise can lead to the model not training or converging properly
+                if fqn in (first_layer_name, last_layer_name):
+                    return False
+                return True
+
+            from torchao.float8 import convert_to_float8_training, Float8LinearConfig
+            from functools import partial
+
+            first_linear = None
+            last_linear = None
+            for name, module in model.named_modules():
+                if isinstance(module, torch.nn.Linear):
+                    if first_linear is None:
+                        first_linear = name
+                    last_linear = name
+
+            func = partial(
+                filter_linear_layers,
+                first_layer_name=first_linear,
+                last_layer_name=last_linear,
+            )
+            config = Float8LinearConfig.from_recipe_name("tensorwise")
+            convert_to_float8_training(
+                model,
+                config=config,
+                module_filter_fn=func,
+            )
+
+            for m in reversed(list(model.modules())):
+                if isinstance(m, LlamaDecoderLayer):
+                    m.compile(
+                        backend="inductor",
+                        # mode="max-autotune",
+                    )
+        case "opt_7":
+            model = model.to(torch.bfloat16)
+            # original_forward = LlamaForCausalLM.forward
+            LlamaForCausalLM.forward = forward_v1
+            original_forwards["LlamaForCausalLM"]["custom"] = forward_v1
+
+            def process_output_mem_cell(self, model_outputs, **kwargs):
+                """new version"""
+                if self.num_mem_tokens not in {0, None}:  # True
+                    out = CausalLMOutputWithCrossAttentions()
+                    memory_state = model_outputs.hidden_states[-1][
+                        :, -self.num_mem_tokens :
+                    ]
+                    # out["logits"] = model_outputs.logits[
+                    #     :, self.num_mem_tokens : -self.num_mem_tokens
+                    # ]
+                    out["logits"] = model_outputs.logits
+
+                    if kwargs.get("output_hidden_states"):
+                        out["hidden_states"] = [
+                            lh[:, self.num_mem_tokens : -self.num_mem_tokens]
+                            for lh in model_outputs.hidden_states
+                        ]
+                    if kwargs.get("output_attentions"):
+                        out["attentions"] = model_outputs["attentions"]
+                else:
+                    memory_state = None
+                    out = model_outputs
+
+                return out, memory_state
+
+            MemoryCell.process_output = process_output_mem_cell
+            original_forwards["MemoryCell"]["custom"] = process_output_mem_cell
+
+            def process_outputs_recurrent_wrapper(self, cell_outputs, **kwargs):
+                """new version"""
+                out = CausalLMOutputWithCrossAttentions()
+                # full_logits = torch.cat(
+                #     [o.logits for o in cell_outputs if not o.logits is None],
+                #     dim=0,
+                # )
+                # full_hidden_states = tuple(
+                #     [
+                #         torch.cat(layer_hs, dim=1)
+                #         for layer_hs in zip(*[o.hidden_states for o in cell_outputs])
+                #     ]
+                # )
+                total_hidden_states = torch.cat(
+                    [item.hidden_states[-1] for item in cell_outputs],
+                    dim=1,
+                )
+
+                labels = kwargs.get("labels")
+                if labels is not None:
+                    shift_labels = labels[..., 1:].contiguous()
+                    shift_logits = total_hidden_states[
+                        ..., :-1, :
+                    ].contiguous()  # full_logits=torch.Size([4, 1024, 50257])
+                    # shift_logits = (
+                    #     full_logits.contiguous()
+                    # )  # full_logits=torch.Size([4, 1024, 50257])
+                    flat_labels = shift_labels.view(-1)
+                    flat_logits = shift_logits.view(-1, shift_logits.size(-1))
+
+                    # loss_fct = CrossEntropyLoss()
+                    labels_mask = kwargs.get("labels_mask")
+                    if labels_mask is not None:
+                        shift_mask = labels_mask[..., :-1].contiguous()
+
+                        flat_labels = flat_labels[
+                            shift_mask.view(-1)
+                        ]  # torch.Size([15])
+                        flat_logits = flat_logits[
+                            shift_mask.view(-1)
+                        ]  # torch.Size([15, 50257])
+                    # print(flat_logits.shape)
+                    # tensor([37648,  3823, 50256, 50256, 36269, 50256, 50256, 15813,  6607, 50256, 50256, 37648,  3823, 50256, 50256], device='cuda:0')
+                    # loss= tensor(13.1875, device='cuda:0', dtype=torch.bfloat16, grad_fn=<NllLossBackward0>)
+                    # self.memory_cell.model.lm_head
+                    # flat_logits = self.memory_cell.model.lm_head(flat_logits)
+                    loss = linear_cross_entropy(
+                        flat_logits,
+                        self.memory_cell.model.lm_head.weight,
+                        flat_labels,
+                        shift=False,
+                        impl=_PATCH_OPTS.impl,
+                        reduction=_PATCH_OPTS.reduction,
+                    )
+                    # out["loss"] = loss_fct(flat_logits, flat_labels)
+                    out["loss"] = loss
+                    if out["loss"] is None:
+                        raise ValueError
+                else:
+                    out["loss"] = 0
+
+                # out["logits"] = full_logits
+                # out["logits"] = flat_logits
+                segment_keys = ["loss", "logits"]
+                if kwargs.get("output_attentions"):
+                    segment_keys.append("attentions")
+                # if kwargs.get("output_hidden_states"):
+                #     segment_keys.append("hidden_states")
+                #     out["hidden_states"] = full_hidden_states
+
+                for seg_num, o in enumerate(cell_outputs):
+                    for key, value in o.items():
+                        if any([sk in key for sk in segment_keys]):
+                            out[f"{key}_{seg_num}"] = value
+
+                return out
+
+            RecurrentWrapper.process_outputs = process_outputs_recurrent_wrapper
+            original_forwards["RecurrentWrapper"][
+                "custom"
+            ] = process_outputs_recurrent_wrapper
+
+            def filter_linear_layers(
+                module, fqn, first_layer_name=None, last_layer_name=None
+            ):
+                if isinstance(module, torch.nn.Linear):
+                    if module.in_features % 16 != 0 or module.out_features % 16 != 0:
+                        return False
+                # For stability reasons, we skip the first and last linear layers
+                # Otherwise can lead to the model not training or converging properly
+                if fqn in (first_layer_name, last_layer_name):
+                    return False
+                return True
+
+            from torchao.float8 import convert_to_float8_training, Float8LinearConfig
+            from functools import partial
+
+            first_linear = None
+            last_linear = None
+            for name, module in model.named_modules():
+                if isinstance(module, torch.nn.Linear):
+                    if first_linear is None:
+                        first_linear = name
+                    last_linear = name
+
+            func = partial(
+                filter_linear_layers,
+                first_layer_name=first_linear,
+                last_layer_name=last_linear,
+            )
+            config = Float8LinearConfig.from_recipe_name("tensorwise")
+            convert_to_float8_training(
+                model,
+                config=config,
+                module_filter_fn=func,
+            )
+
+            for m in reversed(list(model.modules())):
+                if isinstance(m, LlamaDecoderLayer):
+                    m.compile(
+                        backend="inductor",
+                        # mode="max-autotune",
+                    )
 
     if args.use_lora:
         peft_config = LoraConfig(
@@ -773,6 +1300,22 @@ if __name__ == "__main__":
             segment_alignment=args.segment_alignment,
             k2=args.k2,
         )
+        match opt_level:
+            case "opt_5":
+                # model.memory_cell.memory.to(torch.bfloat16) #incorrect
+                model.memory_cell.memory.data = model.memory_cell.memory.data.to(
+                    torch.bfloat16
+                )
+            case "opt_6":
+                # model.memory_cell.memory.to(torch.bfloat16) #incorrect
+                model.memory_cell.memory.data = model.memory_cell.memory.data.to(
+                    torch.bfloat16
+                )
+            case "opt_7":
+                # model.memory_cell.memory.to(torch.bfloat16) #incorrect
+                model.memory_cell.memory.data = model.memory_cell.memory.data.to(
+                    torch.bfloat16
+                )
 
         ## load cpt of rmt
         if args.model_cpt:
@@ -801,6 +1344,10 @@ if __name__ == "__main__":
 
     # define optimizer
     optimizer_cls = get_optimizer(args.optimizer)
+    match opt_level:
+        case 'opt_7':
+            import bitsandbytes as bnb
+            optimizer_cls = bnb.optim.Adam8bit
     if optimizer_cls is None:
         raise RuntimeError(
             f"{args.optimizer} was not found in optimizers, torch.optim, transformers.optimization"
@@ -818,8 +1365,9 @@ if __name__ == "__main__":
     def keep_for_metrics_fn(batch, output):
         # select data from batch and model output that would be used to compute metrics
         data = {}
-        data["labels"] = batch["labels"]
         data["loss"] = output["loss"]
+
+        data["labels"] = batch["labels"]
         data["target_text"] = batch["target_text"]
         if "logits" in output:
             data["predictions"] = torch.argmax(output["logits"].detach(), dim=-1)
@@ -828,6 +1376,7 @@ if __name__ == "__main__":
             ]
         if "generation_outputs" in output:
             data["generation_outputs"] = output["generation_outputs"]
+
         return data
 
     # HF datasets can compute metrics on each gpu process and then aggregate them on process with rank 0
@@ -846,8 +1395,8 @@ if __name__ == "__main__":
     # model, optimizer, _ = accelerator.prepare(model, optimizer, train_dataloader)
 
     def metrics_fn(data):
-        # compute metrics based on stored labels, predictions, ...
         metrics = {}
+        # compute metrics based on stored labels, predictions, ...
         if "generation_outputs" in data:
             generation_outputs = tokenizer.batch_decode(
                 [d for d in data["generation_outputs"]], add_special_tokens=False
@@ -930,6 +1479,7 @@ if __name__ == "__main__":
         ###booydar
         batch_metrics_fn=batch_metrics_fn,
         generate_kwargs={"pad_token_id": id_pad_value, "max_new_tokens": 10},
+        original_forwards=original_forwards,
     )
 
     if not args.validate_only:

@@ -20,6 +20,12 @@ from lm_experiments_tools.utils import rank_0, get_fn_param_names
 
 import accelerate
 from accelerate.logging import get_logger
+from transformers.models.llama.modeling_llama import (
+    LlamaAttention,
+    LlamaDecoderLayer,
+    LlamaModel,
+    LlamaForCausalLM,
+)
 
 logger = get_logger("")
 
@@ -222,6 +228,7 @@ class Trainer:
         metrics_fn=None,
         forward_kwargs={},
         generate_kwargs={},
+        **kwargs,
     ) -> None:
         """Implements training loop with horovod multi-gpu, apex fp16 & grad accumulation support.
 
@@ -259,6 +266,8 @@ class Trainer:
             generate_kwargs (Optional): keyworded arguments that should be passed to model.geberate along with
                 `input_ids`.
         """
+        if not kwargs.get("original_forwards", None) is None:
+            self.original_forwards = kwargs["original_forwards"]
         # we assume that train/valid/test dataloaders are already multi-gpu aware
         self.accelerator = accelerator
         logger.info(
@@ -870,6 +879,14 @@ class Trainer:
         logger.info("Done!")
 
     def validate(self, dataloader, split="valid", write_tb=True) -> Dict[str, float]:
+        if self.args.opt_level in [
+            "opt_5",
+            "opt_6",
+            "opt_7",
+        ]:
+            for k in self.original_forwards:
+                item = self.original_forwards[k]
+                setattr(item["class"], item["attr_name"], item["original"])
         logger.info(f"start validation at step {self.n_iter}")
         self._reset_batch_metrics(split)
         self._reset_metrics_data(split)
@@ -917,6 +934,15 @@ class Trainer:
                 )
             if self.tb and write_tb:
                 self.tb.flush()
+
+        if self.args.opt_level in [
+            "opt_5",
+            "opt_6",
+            "opt_7",
+        ]:
+            for k in self.original_forwards:
+                item = self.original_forwards[k]
+                setattr(item["class"], item["attr_name"], item["custom"])
 
         return metrics
 

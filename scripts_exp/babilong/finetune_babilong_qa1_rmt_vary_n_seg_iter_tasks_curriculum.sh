@@ -18,7 +18,7 @@ MODEL_NAME=unsloth/Llama-3.2-1B  # backbone model
 
 ITERS=5000
 # TBS=64
-TBS=4
+TBS=8
 
 train_folder=/code/rmt_workdir
 model_base_folder="$train_folder"/babilong
@@ -30,7 +30,7 @@ mkdir -p $model_base_folder
 mkdir -p $dataset_folder
 mkdir -p $noise_folder
 
-opt_level="opt_3"
+opt_level="opt_7"
 
 for TASK_DATASET in qa1_single-supporting-fact;
 do
