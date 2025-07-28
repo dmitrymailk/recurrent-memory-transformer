@@ -23,6 +23,12 @@ from torch.utils.data.distributed import DistributedSampler
 from peft import get_peft_model, LoraConfig, TaskType
 from functools import partial
 import transformers
+from transformers.models.llama.modeling_llama import (
+    LlamaAttention,
+    LlamaDecoderLayer,
+    LlamaModel,
+    LlamaForCausalLM,
+)
 
 # load_dotenv()
 from babilong_utils import TaskDataset, SentenceSampler, NoiseInjectionDataset
@@ -60,6 +66,12 @@ from lm_experiments_tools.utils import (
 # torch.cuda.set_device(hvd.local_rank())
 def create_parser():
     parser = HfArgumentParser(TrainerArgs)
+    parser.add_argument(
+        "--max_epochs",
+        type=int,
+        help="max train epochs",
+        default=1,
+    )
     parser.add_argument(
         "--opt_level",
         type=str,
@@ -320,7 +332,7 @@ def create_parser():
 
 
 # def collate_fn(batch):
-def collate_fn(batch, id_pad_value, gen_token, eos_token):
+def collate_fn(batch, id_pad_value, gen_token, eos_token, args):
     targets = [torch.tensor(b["target_tokens"]) for b in batch]
     input_ids = [
         torch.tensor(
@@ -341,11 +353,61 @@ def collate_fn(batch, id_pad_value, gen_token, eos_token):
     labels_mask = [torch.zeros_like(b, dtype=bool) for b in input_ids]
     for m, t in zip(labels_mask, targets):
         m[-len(t) - 2 :] = True
+        # m[-len(t) :] = True
 
     input_ids = pad_sequence(input_ids, padding_value=id_pad_value, batch_first=True)
     gen_inputs = pad_sequence(gen_inputs, padding_value=id_pad_value, batch_first=True)
     attention_mask = pad_sequence(attention_mask, padding_value=0, batch_first=True)
     labels_mask = pad_sequence(labels_mask, padding_value=0, batch_first=True)
+
+    segments_amount = 2
+    segment_size = 512
+    last_part_len = (
+        input_ids.shape[1] - input_ids.shape[1] // segment_size * segment_size
+    )
+    need_pad = last_part_len % 16 != 0 and args.opt_level in [
+        "opt_3",
+        "opt_4",
+    ]
+    #  pad for float8 support
+    if need_pad:
+        new_pad_tokens_amount = 16 * (last_part_len // 16 + 1) - last_part_len
+        new_pad_tokens = (
+            torch.ones(
+                (input_ids.shape[0], new_pad_tokens_amount),
+                device=input_ids.device,
+            )
+            * id_pad_value
+        ).to(input_ids.dtype)
+        input_ids = torch.cat(
+            [
+                input_ids,
+                new_pad_tokens,
+            ],
+            dim=1,
+        )
+        gen_inputs = torch.cat(
+            [
+                gen_inputs,
+                new_pad_tokens,
+            ],
+            dim=1,
+        )
+        new_attetion_mask = torch.zeros_like(new_pad_tokens).to(attention_mask.dtype)
+        attention_mask = torch.cat(
+            [
+                attention_mask,
+                new_attetion_mask,
+            ],
+            dim=1,
+        )
+        labels_mask = torch.cat(
+            [
+                labels_mask,
+                new_attetion_mask.to(labels_mask.dtype),
+            ],
+            dim=1,
+        )
 
     collated = {}
     collated["input_ids"] = collated["labels"] = input_ids
@@ -361,17 +423,17 @@ if __name__ == "__main__":
     parser = create_parser()
     args = parser.parse_args()
     opt_level = args.opt_level
-    if opt_level == "opt_2":
-        torch.manual_seed(args.seed)
-        random.seed(args.seed)
-        np.random.seed(args.seed)
+    # if opt_level == "opt_2":
+    #     torch.manual_seed(args.seed)
+    #     random.seed(args.seed)
+    #     np.random.seed(args.seed)
     # set current working dir
     args.working_dir = str(Path(args.working_dir).expanduser().absolute())
     os.chdir(args.working_dir)
-
     accelerator = accelerate.Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         log_with="wandb",
+        mixed_precision="bf16",
     )
     from accelerate.logging import get_logger
 
@@ -466,21 +528,6 @@ if __name__ == "__main__":
         shuffle=True,
         random_seed=42,
     )
-    if opt_level == "opt_2":
-        noise_sampler_train = SentenceSampler(
-            noise_dataset_train,
-            tokenizer=tokenizer,
-            max_sentence_len=max_sentence_len,
-            shuffle=True,
-            random_seed=args.seed,
-        )
-        noise_sampler_test = SentenceSampler(
-            noise_dataset_test,
-            tokenizer=tokenizer,
-            max_sentence_len=max_sentence_len,
-            shuffle=True,
-            random_seed=args.seed,
-        )
 
     train_dataset = NoiseInjectionDataset(
         task_dataset=task_dataset_train,
@@ -491,6 +538,7 @@ if __name__ == "__main__":
         task_start_pct=args.task_start_pct,
         task_end_pct=args.task_end_pct,
     )
+    # len(train_dataset)=9999, "--gradient_accumulation_steps=16", "--batch_size=4",
 
     test_dataset = NoiseInjectionDataset(
         task_dataset=task_dataset_test,
@@ -502,18 +550,18 @@ if __name__ == "__main__":
         task_end_pct=args.task_end_pct,
     )
 
-    id_pad_value = (
-        tokenizer.pad_token_id
-        if tokenizer.pad_token_id is not None
-        else tokenizer.eos_token_id
-    )
-    gen_token = tokenizer.encode("GEN")[0]
+    id_pad_value = tokenizer.eos_token_id
+    gen_token = tokenizer.encode("GEN", add_special_tokens=False)[0]
     eos_token = tokenizer.eos_token_id
 
     # train_dataset, valid_dataset, test_dataset = dataset["train"], dataset["validation"], dataset["test"]
 
     dataloader_collate_fn = partial(
-        collate_fn, id_pad_value=id_pad_value, gen_token=gen_token, eos_token=eos_token
+        collate_fn,
+        id_pad_value=id_pad_value,
+        gen_token=gen_token,
+        eos_token=eos_token,
+        args=args,
     )
     kwargs = {
         "pin_memory": True,
@@ -584,24 +632,105 @@ if __name__ == "__main__":
     logger.info(f"Loading pretrained model: {args.from_pretrained}")
 
     model = None
+    model = model_cls.from_pretrained(
+        args.from_pretrained,
+        use_safetensors=True,
+        torch_dtype=torch.bfloat16,
+        attn_implementation="flash_attention_2",
+    )
     match opt_level:
-        case "opt_1":
-            model = model_cls.from_pretrained(
-                args.from_pretrained,
-                use_safetensors=False,
-            )
         case "opt_2":
-            model = model_cls.from_pretrained(
-                args.from_pretrained,
-                use_safetensors=False,
-            )
+            for m in reversed(list(model.modules())):
+                if isinstance(m, LlamaDecoderLayer):
+                    m.compile(
+                        backend="inductor",
+                        # mode="max-autotune",
+                    )
         case "opt_3":
-            model = model_cls.from_pretrained(
-                args.from_pretrained,
-                use_safetensors=False,
-                torch_dtype=torch.bfloat16,
-                attn_implementation="flash_attention_2",
+
+            def filter_linear_layers(
+                module, fqn, first_layer_name=None, last_layer_name=None
+            ):
+                if isinstance(module, torch.nn.Linear):
+                    if module.in_features % 16 != 0 or module.out_features % 16 != 0:
+                        return False
+                # For stability reasons, we skip the first and last linear layers
+                # Otherwise can lead to the model not training or converging properly
+                if fqn in (first_layer_name, last_layer_name):
+                    return False
+                return True
+
+            from torchao.float8 import convert_to_float8_training, Float8LinearConfig
+            from functools import partial
+
+            first_linear = None
+            last_linear = None
+            for name, module in model.named_modules():
+                if isinstance(module, torch.nn.Linear):
+                    if first_linear is None:
+                        first_linear = name
+                    last_linear = name
+
+            func = partial(
+                filter_linear_layers,
+                first_layer_name=first_linear,
+                last_layer_name=last_linear,
             )
+            config = Float8LinearConfig.from_recipe_name("tensorwise")
+            convert_to_float8_training(
+                model,
+                config=config,
+                module_filter_fn=func,
+            )
+            for m in reversed(list(model.modules())):
+                if isinstance(m, LlamaDecoderLayer):
+                    m.compile(
+                        backend="inductor",
+                        # mode="max-autotune",
+                    )
+        case "opt_4":
+            model = model.to(torch.bfloat16)
+
+            def filter_linear_layers(
+                module, fqn, first_layer_name=None, last_layer_name=None
+            ):
+                if isinstance(module, torch.nn.Linear):
+                    if module.in_features % 16 != 0 or module.out_features % 16 != 0:
+                        return False
+                # For stability reasons, we skip the first and last linear layers
+                # Otherwise can lead to the model not training or converging properly
+                if fqn in (first_layer_name, last_layer_name):
+                    return False
+                return True
+
+            from torchao.float8 import convert_to_float8_training, Float8LinearConfig
+            from functools import partial
+
+            first_linear = None
+            last_linear = None
+            for name, module in model.named_modules():
+                if isinstance(module, torch.nn.Linear):
+                    if first_linear is None:
+                        first_linear = name
+                    last_linear = name
+
+            func = partial(
+                filter_linear_layers,
+                first_layer_name=first_linear,
+                last_layer_name=last_linear,
+            )
+            config = Float8LinearConfig.from_recipe_name("tensorwise")
+            convert_to_float8_training(
+                model,
+                config=config,
+                module_filter_fn=func,
+            )
+            for m in reversed(list(model.modules())):
+                if isinstance(m, LlamaDecoderLayer):
+                    m.compile(
+                        backend="inductor",
+                        mode="max-autotune",
+                    )
 
     if args.use_lora:
         peft_config = LoraConfig(
@@ -713,7 +842,6 @@ if __name__ == "__main__":
     # - compute metrics on batch lvl
     # - add support of HF metrics and turn off aggregation in case if metric has .add_batch method
     # scrolls_metric = datasets.load_metric(scrolls_metric_path, args.task_name, keep_in_memory=True)
-
     model, optimizer = accelerator.prepare(model, optimizer)
     # model, optimizer, _ = accelerator.prepare(model, optimizer, train_dataloader)
 
@@ -728,6 +856,13 @@ if __name__ == "__main__":
                 if "<|endoftext|>" in o:
                     # print(f"gt: {data['target_text'][i]}, generated {o}")
                     generation_outputs[i] = o.split("<|endoftext|>")[1].strip()
+                if "<|end_of_text|>" in o:
+                    print(f"gt: {data['target_text'][i]}, generated {o}")
+                    generation_outputs[i] = (
+                        o.split("<|end_of_text|>")[1]
+                        .replace("<|begin_of_text|>")
+                        .strip()
+                    )
 
             metrics["exact_match"] = np.mean(
                 [
@@ -744,6 +879,9 @@ if __name__ == "__main__":
             for i, l in enumerate(predicted_labels):
                 if "<|endoftext|>" in l:
                     eos_ind = predicted_labels[i].index("<|endoftext|>")
+                    predicted_labels[i] = predicted_labels[i][:eos_ind]
+                if "<|end_of_text|>" in l:
+                    eos_ind = predicted_labels[i].index("<|end_of_text|>")
                     predicted_labels[i] = predicted_labels[i][:eos_ind]
 
             metrics["exact_match"] = np.mean(

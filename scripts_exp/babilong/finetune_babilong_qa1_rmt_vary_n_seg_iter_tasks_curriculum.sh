@@ -12,11 +12,13 @@ RECURRENT_WRAPPER=modeling_rmt.language_modeling:RecurrentWrapper
 BACKBONE_CLS=transformers:AutoModelForCausalLM
 NOISE_DATASET=pg19
 METRIC=exact_match
-
-MODEL_NAME=gpt2  # backbone model
+export TOKENIZERS_PARALLELISM=false
+# MODEL_NAME=gpt2  # backbone model
+MODEL_NAME=unsloth/Llama-3.2-1B  # backbone model
 
 ITERS=5000
-TBS=64
+# TBS=64
+TBS=4
 
 train_folder=/code/rmt_workdir
 model_base_folder="$train_folder"/babilong
@@ -28,7 +30,7 @@ mkdir -p $model_base_folder
 mkdir -p $dataset_folder
 mkdir -p $noise_folder
 
-opt_level="opt_2"
+opt_level="opt_3"
 
 for TASK_DATASET in qa1_single-supporting-fact;
 do
@@ -40,7 +42,7 @@ do
     do # size of one segment in tokens
       
       MAX_N_SEGMENTSS=(0 1 2 4 6 8 16 32)
-      BSS=(32 32 16 16 8 8 4 2)
+      BSS=(32 32 $TBS 16 8 8 4 2)
       
       for (( j=2; j<${#MAX_N_SEGMENTSS[@]}; j++ ));
       do
@@ -59,7 +61,8 @@ do
           
           SAMPLE_SIZE=$((MAX_N_SEGMENTS*SEGMENT_SIZE)) # length of task sample in tokens
           
-          GRAD_ACC_STEPS=$(($TBS/($BS*$NP)))
+          # GRAD_ACC_STEPS=$(($TBS/($BS*$NP)))
+          GRAD_ACC_STEPS=1
           
           SCHEDULER=linear
           
@@ -85,7 +88,8 @@ do
             echo SAMPLE_SIZE $SAMPLE_SIZE MODEL_NAME $MODEL_NAME  LR $LR N $N
             echo gradient accumulation steps $GRAD_ACC_STEPS
             
-            accelerate launch --config_file $ACCEL_CONFIG --main_process_port 29007 run_finetuning_babilong_rmt.py \
+            # accelerate launch --config_file $ACCEL_CONFIG --main_process_port 29007 run_finetuning_babilong_rmt.py \
+            accelerate launch run_finetuning_babilong_rmt.py \
             --task_dataset $TASK_DATASET \
             --noise_dataset $NOISE_DATASET \
             --babi_path $dataset_folder \
@@ -100,7 +104,7 @@ do
             --num_mem_tokens $MEMORY_SIZE \
             --max_n_segments $MAX_N_SEGMENTS\
             --vary_n_segments \
-            --batch_size $BS --gradient_accumulation_steps $(($TBS/($BS*$NP))) \
+            --batch_size $BS --gradient_accumulation_steps 1 \
             --num_training_steps $((ITERS*2)) \
             --iters $ITERS \
             --save_best \
@@ -114,9 +118,11 @@ do
             --early_stopping_patience 15 \
             --seed $(($N+42)) \
             --clip_grad_norm 1.0 \
-            --opt_name "$opt_level MEM_SIZE_$MEMORY_SIZE SEG_SIZE_$SEGMENT_SIZE MAX_N_SEG_$MAX_N_SEGMENTS" \
-            --opt_level $opt_level
+            --opt_name "$opt_level $MODEL_NAME MEM_SIZE_$MEMORY_SIZE SEG_SIZE_$SEGMENT_SIZE MAX_N_SEG_$MAX_N_SEGMENTS" \
+            --opt_level $opt_level \
+            --max_epochs 3
             # --use_generate_on_valid \
+            # --batch_size $BS --gradient_accumulation_steps $(($TBS/($BS*$NP))) \
             
           done
         done

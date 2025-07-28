@@ -539,13 +539,14 @@ class Trainer:
         return total_norm
 
     def _train_batch_generator(self):
-        while self.n_iter <= self.args.iters:
+        while self.n_epoch < self.args.max_epochs:
+            # while self.n_iter <= self.args.iters:
             if self.train_sampler:
                 self.train_sampler.set_epoch(self.n_epoch)
             # self.train_dataloader
             for batch in self.train_dataloader:
-                if self.n_iter > self.args.iters:
-                    return
+                # if self.n_iter > self.args.iters:
+                #     return
                 yield batch
                 self.n_iter += 1
             self.n_epoch += 1
@@ -683,7 +684,7 @@ class Trainer:
 
     def train(self) -> None:
         pbar = tqdm(
-            total=self.args.iters,
+            total=len(self.train_dataloader) * self.args.max_epochs,
             desc="Train",
             disable=(not self.accelerator.is_main_process),
         )
